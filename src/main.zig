@@ -240,14 +240,7 @@ test "movRegReg" {
 
     var read_buf: [16]u8 = undefined;
 
-    const regs = comptime blk: {
-        const fields = @typeInfo(Reg).Enum.fields;
-        var buf: [fields.len]Reg = undefined;
-        for (fields, &buf) |f, *r| {
-            r.* = @field(Reg, f.name);
-        }
-        break :blk buf;
-    };
+    const regs = [_]Reg{ .al, .ah, .ax, .eax, .rax, .spl, .r8b, .r8w, .r8d, .r8 };
 
     for (regs) |r1| {
         for (regs) |r2| {
