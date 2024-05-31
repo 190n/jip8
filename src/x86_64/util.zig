@@ -1,7 +1,10 @@
 pub const Rex = packed struct(u8) {
+    /// Extension of R/M field in ModR/M
     b: bool = false,
     x: bool = false,
+    /// Extension of Reg field in ModR/M
     r: bool = false,
+    /// Whether 64-bit wide registers are used
     w: bool = false,
     _pad: enum(u4) { rex = 0b0100 } = .rex,
 };
@@ -93,6 +96,20 @@ pub const Reg = enum {
         if (self == .spl or self == .bpl or self == .sil or self == .dil) return .mandatory;
         if (self.width() == .qword) return .mandatory;
         return null;
+    }
+
+    /// Return the 32-bit register numbered n
+    pub fn numbered32(n: u3) Reg {
+        return switch (n) {
+            0 => .eax,
+            1 => .ecx,
+            2 => .edx,
+            3 => .ebx,
+            4 => .esp,
+            5 => .ebp,
+            6 => .esi,
+            7 => .edi,
+        };
     }
 };
 

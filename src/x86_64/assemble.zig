@@ -42,12 +42,62 @@ pub fn binOpRegReg(
     try code_buf.append(@bitCast(ModRM.register(dst, src)));
 }
 
+pub fn binOpRegInOpcodeImm(
+    code_buf: *CodeBuf,
+    opcode: u8,
+    dst: Reg,
+    val: i64,
+) !void {
+    if (dst.width() == .word) {
+        try code_buf.append(0x66);
+    }
+    if (dst.rex() == .mandatory) {
+        try code_buf.append(@bitCast(Rex{
+            .w = dst.width() == .qword,
+            .b = dst.isExtendedHalf(),
+        }));
+    }
+    try code_buf.append(opcode | @as(u8, dst.num()));
+    switch (dst.width()) {
+        .byte_h, .byte_l => try code_buf.append(@bitCast(@as(i8, @intCast(val)))),
+        .word => try code_buf.appendSlice(std.mem.asBytes(&@as(i16, @intCast(val)))),
+        .dword => try code_buf.appendSlice(std.mem.asBytes(&@as(i32, @intCast(val)))),
+        .qword => try code_buf.appendSlice(std.mem.asBytes(&val)),
+    }
+}
+
 pub fn movRegReg(code_buf: *CodeBuf, dst: Reg, src: Reg) !void {
     return binOpRegReg(
         code_buf,
         if (dst.width().numeric() == 8) 0x88 else 0x89,
         dst,
         src,
+    );
+}
+
+pub fn movRegImm(code_buf: *CodeBuf, dst: Reg, val: i64) !void {
+    if (dst.width() == .qword) {
+        if (std.math.cast(i32, val)) |v| {
+            // we can use a shorter sign-extending instruction if we are moving 32 bits into a 64
+            // bit register
+            try code_buf.append(@bitCast(Rex{
+                .w = true,
+                .b = dst.isExtendedHalf(),
+            }));
+            try code_buf.append(0xc7);
+            try code_buf.append(@bitCast(ModRM.register(dst, Reg.numbered32(0))));
+            try code_buf.appendSlice(std.mem.asBytes(&v));
+        }
+    }
+
+    return binOpRegInOpcodeImm(
+        code_buf,
+        switch (dst.width()) {
+            .byte_h, .byte_l => 0xb0,
+            .word, .dword, .qword => 0xb8,
+        },
+        dst,
+        val,
     );
 }
 
