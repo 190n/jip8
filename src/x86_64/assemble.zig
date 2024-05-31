@@ -59,9 +59,9 @@ pub fn binOpRegInOpcodeImm(
     }
     try code_buf.append(opcode | @as(u8, dst.num()));
     switch (dst.width()) {
-        .byte_h, .byte_l => try code_buf.append(@bitCast(@as(i8, @truncate(val)))),
-        .word => try code_buf.appendSlice(std.mem.asBytes(&@as(i16, @truncate(val)))),
-        .dword => try code_buf.appendSlice(std.mem.asBytes(&@as(i32, @truncate(val)))),
+        .byte_h, .byte_l => try code_buf.append(@bitCast(@as(i8, @intCast(val)))),
+        .word => try code_buf.appendSlice(std.mem.asBytes(&@as(i16, @intCast(val)))),
+        .dword => try code_buf.appendSlice(std.mem.asBytes(&@as(i32, @intCast(val)))),
         .qword => try code_buf.appendSlice(std.mem.asBytes(&val)),
     }
 }
@@ -179,6 +179,11 @@ test "movRegImm" {
     const immediates = [_]i64{ 0x01, 0x0123, 0x01234567, 0x0123456789abcdef };
     for (regs) |r| {
         for (immediates) |i| {
+            const bits = r.width().numeric();
+            if (@clz(i) < 64 - bits) {
+                continue;
+            }
+
             try testResultMatches(
                 tmp_dir.dir,
                 "mov {s}, 0x{x}",
