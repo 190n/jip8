@@ -1,6 +1,6 @@
 const std = @import("std");
 
-fn async_fn(ctx: *Context) callconv(.C) i64 {
+fn asyncFn(ctx: *Context) callconv(.C) i64 {
     const log = std.log.scoped(.child);
     log.info("inside async_fn", .{});
     ctx.yield();
@@ -12,7 +12,7 @@ pub fn main() !void {
     const stack = try std.heap.page_allocator.alignedAlloc(u8, std.mem.page_size, 16384);
     defer std.heap.page_allocator.free(stack);
 
-    var ctx = Context.init(stack, async_fn);
+    var ctx = Context.init(stack, asyncFn);
     const log = std.log.scoped(.parent);
 
     const retval = blk: while (true) {
