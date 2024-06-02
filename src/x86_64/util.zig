@@ -26,6 +26,17 @@ pub const Width = enum {
     }
 };
 
+/// Describe who is responsible for saving a register's value across function calls
+pub const Saver = enum {
+    /// A called function may change this register without restoring its value before returning. If
+    /// the caller wants to preserve its value, it must spill the register onto the stack before a
+    /// function call.
+    caller,
+    /// A called function must not change this register's value without restoring it before
+    /// returning.
+    callee,
+};
+
 pub const RexUsage = enum {
     /// This register can only be used if REX prefix is used
     mandatory,
@@ -109,6 +120,19 @@ pub const Reg = enum {
             5 => .ebp,
             6 => .esi,
             7 => .edi,
+        };
+    }
+
+    pub fn saver(self: Reg) Saver {
+        return switch (self) {
+            .bl, .bh, .bx, .ebx, .rbx => .callee,
+            .spl, .sp, .esp, .rsp => .callee,
+            .bpl, .bp, .ebp, .rbp => .callee,
+            .r12b, .r12w, .r12d, .r12 => .callee,
+            .r13b, .r13w, .r13d, .r13 => .callee,
+            .r14b, .r14w, .r14d, .r14 => .callee,
+            .r15b, .r15w, .r15d, .r15 => .callee,
+            else => .caller,
         };
     }
 };
