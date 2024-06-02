@@ -2,7 +2,7 @@ const std = @import("std");
 
 fn asyncFn(ctx: *Context) callconv(.C) i64 {
     const log = std.log.scoped(.child);
-    log.info("inside async_fn", .{});
+    log.info("inside asyncFn", .{});
     ctx.yield();
     log.info("after yield", .{});
     return -30;
