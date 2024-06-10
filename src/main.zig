@@ -1,11 +1,12 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 fn asyncFn(ctx: *Context) callconv(.C) i64 {
     const log = std.log.scoped(.child);
     log.info("inside asyncFn", .{});
     ctx.yield();
     log.info("after yield", .{});
-    return -30;
+    return 12345;
 }
 
 pub fn main() !void {
@@ -28,35 +29,64 @@ pub const std_options = std.Options{
     .log_level = .info,
 };
 
-const Context = extern struct {
-    rsp: *anyopaque,
-    did_return: bool = true,
-    stack_ptr: [*]align(16) u8,
-    stack_size: usize,
+const stack_align = builtin.target.stackAlignment();
 
-    fn frameLocationFromStack(stack: []align(16) u8) *StackFrame {
-        return @alignCast(@ptrCast(&stack[stack.len - @sizeOf(StackFrame)]));
+const Context = extern struct {
+    stack_pointer: *anyopaque,
+    stack_base_address: [*]align(stack_align) u8,
+    stack_size: u32,
+    did_return: bool = true,
+
+    fn frameLocationFromStack(stack: []align(stack_align) u8) *StackFrame {
+        return @ptrFromInt(std.mem.alignBackward(
+            usize,
+            @intFromPtr(stack.ptr) + stack.len - @sizeOf(StackFrame),
+            stack_align,
+        ));
     }
 
-    fn stackSlice(self: *const Context) []align(16) u8 {
-        return self.stack_ptr[0..self.stack_size];
+    fn stackSlice(self: *const Context) []align(stack_align) u8 {
+        return self.stack_base_address[0..self.stack_size];
     }
 
     fn frameLocation(self: *const Context) *StackFrame {
         return frameLocationFromStack(self.stackSlice());
     }
 
-    pub fn init(stack: []align(16) u8, code: *const fn (*Context) callconv(.C) i64) Context {
+    pub fn init(stack: []align(stack_align) u8, code: *const fn (*Context) callconv(.C) i64) Context {
         const ctx = Context{
-            .rsp = @ptrCast(frameLocationFromStack(stack)),
-            .stack_ptr = stack.ptr,
-            .stack_size = stack.len,
+            .stack_pointer = @ptrCast(frameLocationFromStack(stack)),
+            .stack_base_address = stack.ptr,
+            .stack_size = @intCast(stack.len),
         };
-        ctx.frameLocation().* = StackFrame{
-            .return_address = code,
-            .final_return_address = runReturnHere,
-            .saved_context_ptr = null,
-        };
+        const stack_frame = ctx.frameLocation();
+
+        switch (builtin.target.cpu.arch) {
+            .x86_64 => {
+                stack_frame.* = .{
+                    .registers = undefined,
+                    .return_address = code,
+                    .final_return_address = runReturnHere,
+                    .saved_context_ptr = null,
+                };
+            },
+            .riscv64 => {
+                stack_frame.* = .{
+                    .registers = undefined,
+                    .ret_addr = @ptrCast(code),
+                    .saved_context_ptr = null,
+                };
+                stack_frame.registers[0] = asm (""
+                    : [ret] "={gp}" (-> usize),
+                );
+                stack_frame.registers[1] = asm (""
+                    : [ret] "={tp}" (-> usize),
+                );
+                stack_frame.registers[26] = @intFromPtr(&runReturnHere);
+            },
+            else => unreachable,
+        }
+
         return ctx;
     }
 
@@ -77,62 +107,40 @@ const Context = extern struct {
     }
 };
 
+const num_saved_regs = switch (builtin.target.cpu.arch) {
+    .x86_64 => 6, // rbx, rbp, r12-r15
+    .riscv64 => 27, // gp, tp, s0-s11, fs0-fs11, ra
+    else => |a| @compileError("unsupported architecture: " ++ @tagName(a)),
+};
+
 /// Matches the order registers are pushed inside switchStacks()
-const StackFrame = extern struct {
-    r15: usize = 0,
-    r14: usize = 0,
-    r13: usize = 0,
-    r12: usize = 0,
-    rbp: usize = 0,
-    rbx: usize = 0,
-    /// The address switchStacks() should return to (which is initially the child function)
-    return_address: *const fn (*Context) callconv(.C) i64,
-    /// The address that the child function should return to when it finishes (does not yield)
-    final_return_address: *const fn () callconv(.C) void,
-    /// The location of the context struct which is restored by switchStacks when the child function
-    /// is returning
-    saved_context_ptr: ?*Context,
-    /// Padding so that the stack is correctly aligned upon entry to the child function
-    _pad: usize = 0,
+const StackFrame = switch (builtin.target.cpu.arch) {
+    .x86_64 => extern struct {
+        registers: [num_saved_regs]usize,
+        /// The address switchStacks() should return to (which is initially the child function)
+        return_address: *const fn (*Context) callconv(.C) i64,
+        /// The address that the child function should return to when it finishes (does not yield)
+        final_return_address: *const fn () callconv(.C) void,
+        /// The location of the context struct which is restored by switchStacks when the child function
+        /// is returning. Alignment is set to ensure correct x86_64 alignment as if the child function
+        /// were an ordinary call -- this field would have been at the stack pointer before the call,
+        /// with a 16-byte alignment, so the final return address we push will be off by 8.
+        saved_context_ptr: ?*Context align(stack_align),
+    },
+    .riscv64 => extern struct {
+        /// Includes return address out of run() and out of child func
+        registers: [num_saved_regs]usize,
+        ret_addr: *const fn () callconv(.C) void,
+        saved_context_ptr: ?*Context align(stack_align),
+    },
+    else => unreachable,
 };
 
 extern fn switchStacks(context: *Context) callconv(.C) i64;
 extern fn runReturnHere() callconv(.C) void;
 
-export const context_rsp_offset: usize = @offsetOf(Context, "rsp");
-
 comptime {
-    asm (
-        \\runReturnHere:
-        // when the async function finally returns, instead of yielding, it will return here
-        // the stack pointer will be 16 bytes below the top of the stack, pointing to a copy of
-        // the context pointer that was saved by run(). we restore that context pointer so that
-        // we know what the original stack to switch back into is, and then execute the latter half
-        // of switch_stacks() normally (switch to the new stack pointer, pop registers, return).
-        \\pop %rdi
-        \\jmp finalRestore
-        \\switchStacks:
-        // push registers to old stack
-        \\push %rbx
-        \\push %rbp
-        \\push %r12
-        \\push %r13
-        \\push %r14
-        \\push %r15
-        // swap stacks
-        \\finalRestore:
-        \\mov context_rsp_offset, %rcx
-        \\xchg %rsp, (%rdi,%rcx,1)
-        // pop registers from new stack
-        \\pop %r15
-        \\pop %r14
-        \\pop %r13
-        \\pop %r12
-        \\pop %rbp
-        \\pop %rbx
-        // return into new code
-        \\ret
-    );
+    std.debug.assert(@offsetOf(Context, "stack_pointer") == 0);
 }
 
 comptime {

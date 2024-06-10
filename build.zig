@@ -21,6 +21,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe.addAssemblyFile(switch (target.result.cpu.arch) {
+        .x86_64 => b.path("src/x86_64/switch.S"),
+        .riscv64 => b.path("src/riscv64/switch.S"),
+        else => |a| std.debug.panic("unsupported architecture: {s}", .{@tagName(a)}),
+    });
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
