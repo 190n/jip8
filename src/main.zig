@@ -31,7 +31,7 @@ pub const std_options = std.Options{
 
 const stack_align = builtin.target.stackAlignment();
 
-const Context = extern struct {
+pub const Context = extern struct {
     stack_pointer: *anyopaque,
     stack_base_address: [*]align(stack_align) u8,
     stack_size: u32,
@@ -59,34 +59,7 @@ const Context = extern struct {
             .stack_base_address = stack.ptr,
             .stack_size = @intCast(stack.len),
         };
-        const stack_frame = ctx.frameLocation();
-
-        switch (builtin.target.cpu.arch) {
-            .x86_64 => {
-                stack_frame.* = .{
-                    .registers = undefined,
-                    .return_address = code,
-                    .final_return_address = runReturnHere,
-                    .saved_context_ptr = null,
-                };
-            },
-            .riscv64 => {
-                stack_frame.* = .{
-                    .registers = undefined,
-                    .ret_addr = @ptrCast(code),
-                    .saved_context_ptr = null,
-                };
-                stack_frame.registers[0] = asm (""
-                    : [ret] "={gp}" (-> usize),
-                );
-                stack_frame.registers[1] = asm (""
-                    : [ret] "={tp}" (-> usize),
-                );
-                stack_frame.registers[26] = @intFromPtr(&runReturnHere);
-            },
-            else => unreachable,
-        }
-
+        ctx.frameLocation().* = StackFrame.init(code);
         return ctx;
     }
 
@@ -97,7 +70,7 @@ const Context = extern struct {
 
     pub fn run(self: *Context) ?i64 {
         self.did_return = true;
-        self.frameLocation().saved_context_ptr = self;
+        self.frameLocation().saved_context_pointer = self;
         const retval = switchStacks(self);
         if (self.did_return) {
             return retval;
@@ -115,24 +88,8 @@ const num_saved_regs = switch (builtin.target.cpu.arch) {
 
 /// Matches the order registers are pushed inside switchStacks()
 const StackFrame = switch (builtin.target.cpu.arch) {
-    .x86_64 => extern struct {
-        registers: [num_saved_regs]usize,
-        /// The address switchStacks() should return to (which is initially the child function)
-        return_address: *const fn (*Context) callconv(.C) i64,
-        /// The address that the child function should return to when it finishes (does not yield)
-        final_return_address: *const fn () callconv(.C) void,
-        /// The location of the context struct which is restored by switchStacks when the child function
-        /// is returning. Alignment is set to ensure correct x86_64 alignment as if the child function
-        /// were an ordinary call -- this field would have been at the stack pointer before the call,
-        /// with a 16-byte alignment, so the final return address we push will be off by 8.
-        saved_context_ptr: ?*Context align(stack_align),
-    },
-    .riscv64 => extern struct {
-        /// Includes return address out of run() and out of child func
-        registers: [num_saved_regs]usize,
-        ret_addr: *const fn () callconv(.C) void,
-        saved_context_ptr: ?*Context align(stack_align),
-    },
+    .x86_64 => @import("./x86_64/switch.zig").StackFrame,
+    .riscv64 => @import("./riscv64/switch.zig").StackFrame,
     else => unreachable,
 };
 
