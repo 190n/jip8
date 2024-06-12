@@ -1,11 +1,11 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const util = @import("./util.zig");
+const x86_64 = @import("../x86_64.zig");
 
-const Reg = util.Reg;
-const Rex = util.Rex;
-const ModRM = util.ModRM;
+const Reg = x86_64.Reg;
+const Rex = x86_64.Rex;
+const ModRM = x86_64.ModRM;
 
 const CodeBuf = std.ArrayListAligned(u8, std.mem.page_size);
 
@@ -15,7 +15,7 @@ pub fn binOpRegReg(
     dst: Reg,
     src: Reg,
 ) !void {
-    if (dst.width().numeric() != src.width().numeric()) {
+    if (dst.region().width() != src.region().width()) {
         return error.WidthMismatch;
     }
 
@@ -25,7 +25,7 @@ pub fn binOpRegReg(
         return error.IncompatibleArguments;
     }
 
-    if (dst.width() == .word) {
+    if (dst.region() == .word) {
         try code_buf.append(0x66);
     }
 
@@ -33,7 +33,7 @@ pub fn binOpRegReg(
     const src_ex = src.isExtendedHalf();
     if (dst_rex == .mandatory or src_rex == .mandatory) {
         try code_buf.append(@bitCast(Rex{
-            .w = dst.width() == .qword,
+            .w = dst.region() == .qword,
             .b = dst_ex,
             .r = src_ex,
         }));
@@ -48,17 +48,17 @@ pub fn binOpRegInOpcodeImm(
     dst: Reg,
     val: i64,
 ) !void {
-    if (dst.width() == .word) {
+    if (dst.region() == .word) {
         try code_buf.append(0x66);
     }
     if (dst.rex() == .mandatory) {
         try code_buf.append(@bitCast(Rex{
-            .w = dst.width() == .qword,
+            .w = dst.region() == .qword,
             .b = dst.isExtendedHalf(),
         }));
     }
     try code_buf.append(opcode | @as(u8, dst.num()));
-    switch (dst.width()) {
+    switch (dst.region()) {
         .byte_h, .byte_l => try code_buf.append(@bitCast(@as(i8, @intCast(val)))),
         .word => try code_buf.appendSlice(std.mem.asBytes(&@as(i16, @intCast(val)))),
         .dword => try code_buf.appendSlice(std.mem.asBytes(&@as(i32, @intCast(val)))),
@@ -69,14 +69,14 @@ pub fn binOpRegInOpcodeImm(
 pub fn movRegReg(code_buf: *CodeBuf, dst: Reg, src: Reg) !void {
     return binOpRegReg(
         code_buf,
-        if (dst.width().numeric() == 8) 0x88 else 0x89,
+        if (dst.region().width() == 8) 0x88 else 0x89,
         dst,
         src,
     );
 }
 
 pub fn movRegImm(code_buf: *CodeBuf, dst: Reg, val: i64) !void {
-    if (dst.width() == .qword) {
+    if (dst.region() == .qword) {
         if (std.math.cast(i32, val)) |v| {
             // we can use a shorter sign-extending instruction if we are moving 32 bits into a 64
             // bit register
@@ -92,7 +92,7 @@ pub fn movRegImm(code_buf: *CodeBuf, dst: Reg, val: i64) !void {
     }
     return binOpRegInOpcodeImm(
         code_buf,
-        switch (dst.width()) {
+        switch (dst.region()) {
             .byte_h, .byte_l => 0xb0,
             .word, .dword, .qword => 0xb8,
         },
@@ -179,7 +179,7 @@ test "movRegImm" {
     const immediates = [_]i64{ 0x01, 0x0123, 0x01234567, 0x0123456789abcdef };
     for (regs) |r| {
         for (immediates) |i| {
-            const bits = r.width().numeric();
+            const bits = r.region().width();
             if (@clz(i) < 64 - bits) {
                 continue;
             }

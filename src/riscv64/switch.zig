@@ -2,39 +2,32 @@ const std = @import("std");
 const print = std.fmt.comptimePrint;
 const mem = std.mem;
 
-const Context = @import("../main.zig").Context;
+const Cpu = @import("../chip8.zig").Cpu;
+const Context = Cpu.Context;
+const GuestFunction = Cpu.GuestFunction;
 
-extern fn switchStacks(context: *Context) callconv(.C) i64;
-extern fn runReturnHere() callconv(.C) void;
+const runReturnHere = @import("../coroutine.zig").runReturnHere;
 
 pub const StackFrame = blk: {
-    var saved_int_registers: [15][]const u8 = .{ "ra", "gp", "tp" } ++ .{"invalid"} ** 12;
+    var saved_int_registers: [13][]const u8 = .{"ra"} ++ .{"invalid"} ** 12;
     var saved_float_registers: [12][]const u8 = .{"invalid"} ** 12;
 
     const StackFrameInner = extern struct {
         saved_registers: [num_saved_regs]usize = undefined,
-        return_address: *const fn (*Context) callconv(.C) i64,
+        return_address: GuestFunction,
         /// sp will be pointing here when we start running the child function, so this is the field
         /// that determines our alignment
-        saved_context_pointer: ?*anyopaque align(16) = null,
+        saved_context_pointer: ?*Context align(16) = null,
 
         pub const num_saved_regs = saved_int_registers.len + saved_float_registers.len;
 
-        pub fn init(code: *const fn (*Context) callconv(.C) i64) StackFrame {
+        pub fn init(code: GuestFunction) StackFrame {
             var frame = StackFrame{
                 .return_address = code,
             };
             // initialize registers that need it
             inline for (saved_int_registers, 0..) |reg_name, reg_index| {
-                if (comptime mem.eql(u8, reg_name, "gp")) {
-                    frame.saved_registers[reg_index] = asm (""
-                        : [ret] "={gp}" (-> usize),
-                    );
-                } else if (comptime mem.eql(u8, reg_name, "tp")) {
-                    frame.saved_registers[reg_index] = asm (""
-                        : [ret] "={tp}" (-> usize),
-                    );
-                } else if (comptime mem.eql(u8, reg_name, "ra")) {
+                if (comptime mem.eql(u8, reg_name, "ra")) {
                     frame.saved_registers[reg_index] = @intFromPtr(&runReturnHere);
                 }
             }
@@ -44,7 +37,7 @@ pub const StackFrame = blk: {
 
     // generate the names of all twelve "standard" saved registers for integer and float
     // (s0-s11, fs0-fs11)
-    for (0..12, saved_int_registers[3..], &saved_float_registers) |i, *int_reg, *float_reg| {
+    for (0..12, saved_int_registers[1..], &saved_float_registers) |i, *int_reg, *float_reg| {
         int_reg.* = print("s{}", .{i});
         float_reg.* = print("fs{}", .{i});
     }

@@ -1,3 +1,6 @@
+pub const assemble = @import("./x86_64/assemble.zig");
+
+/// REX prefix, used to access 64-bit registers and r8-r15
 pub const Rex = packed struct(u8) {
     /// Extension of R/M field in ModR/M
     b: bool = false,
@@ -6,17 +9,25 @@ pub const Rex = packed struct(u8) {
     r: bool = false,
     /// Whether 64-bit wide registers are used
     w: bool = false,
+
     _pad: enum(u4) { rex = 0b0100 } = .rex,
 };
 
-pub const Width = enum {
+/// Specifies which region of a 64-bit register is being referred to
+pub const Region = enum {
+    /// Bits 0:7
     byte_l,
+    /// Bits 8:15
     byte_h,
+    /// Bits 0:15
     word,
+    /// Bits 0:31
     dword,
+    /// Bits 0:63
     qword,
 
-    pub fn numeric(self: Width) u8 {
+    /// Get the number of bits this region takes up
+    pub fn width(self: Region) u8 {
         return switch (self) {
             .byte_l, .byte_h => 8,
             .word => 16,
@@ -37,6 +48,7 @@ pub const Saver = enum {
     callee,
 };
 
+/// Describe whether a register requires the REX prefix or is incompatible with the REX prefix
 pub const RexUsage = enum {
     /// This register can only be used if REX prefix is used
     mandatory,
@@ -90,7 +102,8 @@ pub const Reg = enum {
         };
     }
 
-    pub fn width(self: Reg) Width {
+    /// Indicate which part of a register this register refers to
+    pub fn region(self: Reg) Region {
         return switch (self) {
             .al, .cl, .dl, .bl, .spl, .bpl, .sil, .dil, .r8b, .r9b, .r10b, .r11b, .r12b, .r13b, .r14b, .r15b => .byte_l,
             .ah, .ch, .dh, .bh => .byte_h,
@@ -102,10 +115,16 @@ pub const Reg = enum {
 
     /// Determine whether this register places a constraint on whether the REX prefix should be used
     pub fn rex(self: Reg) ?RexUsage {
-        if (self.isExtendedHalf()) return .mandatory;
-        if (self.width() == .byte_h) return .disallowed;
-        if (self == .spl or self == .bpl or self == .sil or self == .dil) return .mandatory;
-        if (self.width() == .qword) return .mandatory;
+        if (self.isExtendedHalf() or self.region() == .qword) {
+            return .mandatory;
+        }
+        if (self == .spl or self == .bpl or self == .sil or self == .dil) {
+            return .mandatory;
+        }
+        if (self.region() == .byte_h) {
+            return .disallowed;
+        }
+        // this register can be used with or without REX
         return null;
     }
 
@@ -123,7 +142,10 @@ pub const Reg = enum {
         };
     }
 
+    /// Determine whether the source or target of a function call is responsible for saving this
+    /// register's value
     pub fn saver(self: Reg) Saver {
+        // x86_64 *Linux* calling convention
         return switch (self) {
             .bl, .bh, .bx, .ebx, .rbx => .callee,
             .spl, .sp, .esp, .rsp => .callee,
@@ -132,7 +154,16 @@ pub const Reg = enum {
             .r13b, .r13w, .r13d, .r13 => .callee,
             .r14b, .r14w, .r14d, .r14 => .callee,
             .r15b, .r15w, .r15d, .r15 => .callee,
-            else => .caller,
+
+            .al, .ah, .ax, .eax, .rax => .caller,
+            .cl, .ch, .cx, .ecx, .rcx => .caller,
+            .dl, .dh, .dx, .edx, .rdx => .caller,
+            .sil, .si, .esi, .rsi => .caller,
+            .dil, .di, .edi, .rdi => .caller,
+            .r8b, .r8w, .r8d, .r8 => .caller,
+            .r9b, .r9w, .r9d, .r9 => .caller,
+            .r10b, .r10w, .r10d, .r10 => .caller,
+            .r11b, .r11w, .r11d, .r11 => .caller,
         };
     }
 };
@@ -143,10 +174,12 @@ pub const IndexReg = enum(u3) {
     ecx,
     edx,
     ebx,
+
     /// Memory location is indicated by SIB byte which must follow this ModR/M
     sib,
     /// Memory location is rip plus a signed 32-bit displacement following ModR/M
     rip_disp32,
+
     esi,
     edi,
 };
@@ -157,17 +190,24 @@ pub const IndexDispReg = enum(u3) {
     ecx,
     edx,
     ebx,
+
     /// Memory location is indicated by SIB byte which must follow this ModR/M
     sib,
+
     ebp,
     esi,
     edi,
 };
 
+/// Mod field of the ModR/M byte
 pub const Mod = enum(u2) {
+    /// 00: R/M indicates a register to use as an index
     index,
+    /// 01: R/M indicates a register to use as an index with an 8-bit displacement
     index_with_disp8,
+    /// 10: R/M indicates a register to use as an index with a 32-bit displacement
     index_with_disp32,
+    /// 11: R/M indicates a register to use directly
     register,
 };
 

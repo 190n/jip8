@@ -1,16 +1,14 @@
 const std = @import("std");
 const print = std.fmt.comptimePrint;
-const mem = std.mem;
 
-const target = @import("builtin").target;
+const Cpu = @import("../chip8.zig").Cpu;
+const Context = Cpu.Context;
+const GuestFunction = Cpu.GuestFunction;
 
-const Context = @import("../main.zig").Context;
-
-extern fn switchStacks(context: *Context) callconv(.C) i64;
-extern fn runReturnHere() callconv(.C) void;
+const runReturnHere = @import("../coroutine.zig").runReturnHere;
 
 pub const StackFrame = blk: {
-    const saved_registers = switch (target.os.tag) {
+    const saved_registers = switch (@import("builtin").target.os.tag) {
         .linux => .{ "rbx", "rbp", "r12", "r13", "r14", "r15" },
         else => |os| @compileError(print("unsupported OS: {s}", .{@tagName(os)})),
     };
@@ -18,7 +16,7 @@ pub const StackFrame = blk: {
     const StackFrameInner = extern struct {
         saved_registers: [num_saved_regs]usize = undefined,
         /// The address switchStacks() should return to (which is initially the child function)
-        return_address: *const fn (*Context) callconv(.C) i64,
+        return_address: GuestFunction,
         /// The address that the child function should return to when it finishes (does not yield)
         final_return_address: *const fn () callconv(.C) void,
         /// The location of the context struct which is restored by switchStacks when the child function
@@ -29,7 +27,7 @@ pub const StackFrame = blk: {
 
         pub const num_saved_regs = saved_registers.len;
 
-        pub fn init(code: *const fn (*Context) callconv(.C) i64) StackFrame {
+        pub fn init(code: GuestFunction) StackFrame {
             return .{
                 .return_address = code,
                 .final_return_address = &runReturnHere,
