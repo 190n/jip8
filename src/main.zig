@@ -39,5 +39,6 @@ pub const std_options = std.Options{
 };
 
 comptime {
-    std.testing.refAllDecls(@This());
+    std.testing.refAllDeclsRecursive(@This());
+    std.testing.refAllDeclsRecursive(@import("./x86_64.zig"));
 }
