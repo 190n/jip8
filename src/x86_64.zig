@@ -1,4 +1,4 @@
-pub const assemble = @import("./x86_64/assemble.zig");
+pub const Assembler = @import("./x86_64/Assembler.zig");
 
 /// REX prefix, used to access 64-bit registers and r8-r15
 pub const Rex = packed struct(u8) {
@@ -27,7 +27,7 @@ pub const Region = enum {
     qword,
 
     /// Get the number of bits this region takes up
-    pub fn width(self: Region) u8 {
+    pub fn bits(self: Region) u8 {
         return switch (self) {
             .byte_l, .byte_h => 8,
             .word => 16,
@@ -56,7 +56,7 @@ pub const RexUsage = enum {
     disallowed,
 };
 
-pub const Reg = enum {
+pub const Register = enum {
     // zig fmt: off
     al, cl, dl, bl, spl, bpl, sil, dil, r8b, r9b, r10b, r11b, r12b, r13b, r14b, r15b,
     ah, ch, dh, bh,
@@ -66,7 +66,7 @@ pub const Reg = enum {
     // zig fmt: on
 
     /// Get the numeric value of this register for the ModR/M byte
-    pub fn num(self: Reg) u3 {
+    pub fn num(self: Register) u3 {
         return switch (self) {
             .al, .ax, .eax, .rax => 0,
             .cl, .cx, .ecx, .rcx => 1,
@@ -88,7 +88,7 @@ pub const Reg = enum {
     }
 
     /// Return true if this is one of the registers added with x86_64, r8-r15 (or a part thereof)
-    pub fn isExtendedHalf(self: Reg) bool {
+    pub fn isExtendedHalf(self: Register) bool {
         return switch (self) {
             .r8b, .r8w, .r8d, .r8 => true,
             .r9b, .r9w, .r9d, .r9 => true,
@@ -103,7 +103,7 @@ pub const Reg = enum {
     }
 
     /// Indicate which part of a register this register refers to
-    pub fn region(self: Reg) Region {
+    pub fn region(self: Register) Region {
         return switch (self) {
             .al, .cl, .dl, .bl, .spl, .bpl, .sil, .dil, .r8b, .r9b, .r10b, .r11b, .r12b, .r13b, .r14b, .r15b => .byte_l,
             .ah, .ch, .dh, .bh => .byte_h,
@@ -114,7 +114,7 @@ pub const Reg = enum {
     }
 
     /// Determine whether this register places a constraint on whether the REX prefix should be used
-    pub fn rex(self: Reg) ?RexUsage {
+    pub fn rex(self: Register) ?RexUsage {
         if (self.isExtendedHalf() or self.region() == .qword) {
             return .mandatory;
         }
@@ -129,7 +129,7 @@ pub const Reg = enum {
     }
 
     /// Return the 32-bit register numbered n
-    pub fn numbered32(n: u3) Reg {
+    pub fn numbered32(n: u3) Register {
         return switch (n) {
             0 => .eax,
             1 => .ecx,
@@ -144,7 +144,7 @@ pub const Reg = enum {
 
     /// Determine whether the source or target of a function call is responsible for saving this
     /// register's value
-    pub fn saver(self: Reg) Saver {
+    pub fn saver(self: Register) Saver {
         // x86_64 *Linux* calling convention
         return switch (self) {
             .bl, .bh, .bx, .ebx, .rbx => .callee,
@@ -216,7 +216,7 @@ pub const ModRM = packed struct(u8) {
     reg: u3,
     mod: Mod,
 
-    pub fn index(rm: IndexReg, reg: Reg) ModRM {
+    pub fn index(rm: IndexReg, reg: Register) ModRM {
         return .{
             .mod = .index,
             .rm = @intFromEnum(rm),
@@ -224,7 +224,7 @@ pub const ModRM = packed struct(u8) {
         };
     }
 
-    pub fn indexWithDisp8(rm: IndexDispReg, reg: Reg) ModRM {
+    pub fn indexWithDisp8(rm: IndexDispReg, reg: Register) ModRM {
         return .{
             .mod = .index_with_disp8,
             .rm = @intFromEnum(rm),
@@ -232,7 +232,7 @@ pub const ModRM = packed struct(u8) {
         };
     }
 
-    pub fn indexWithDisp32(rm: IndexDispReg, reg: Reg) ModRM {
+    pub fn indexWithDisp32(rm: IndexDispReg, reg: Register) ModRM {
         return .{
             .mod = .index_with_disp32,
             .rm = @intFromEnum(rm),
@@ -240,7 +240,7 @@ pub const ModRM = packed struct(u8) {
         };
     }
 
-    pub fn register(rm: Reg, reg: Reg) ModRM {
+    pub fn register(rm: Register, reg: Register) ModRM {
         return .{
             .mod = .register,
             .rm = rm.num(),
@@ -262,12 +262,18 @@ pub const Opcode = enum(u8) {
     ret = 0xc3,
     /// Breakpoint trap
     int3 = 0xcc,
+    /// Jump to a signed 32-bit offset from RIP (from instruction after jump)
+    jmp32 = 0xe9,
+    /// Jump to a signed 8-bit offset from RIP (from instruction after jump)
+    jmp8 = 0xeb,
+    /// With /4, jump to a register
+    jmp = 0xff,
 
     _,
 
     /// Combine this opcode with a register in the low 3 bytes (for instructions listed with +rb,
     /// +rw, +rd, or +ro
-    pub fn plusRegister(self: Opcode, register: Reg) Opcode {
+    pub fn plusRegister(self: Opcode, register: Register) Opcode {
         return @enumFromInt(@intFromEnum(self) | @as(u8, register.num()));
     }
 };

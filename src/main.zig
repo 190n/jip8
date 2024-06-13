@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 const Cpu = @import("./chip8.zig").Cpu;
 
+const x86_64 = @import("./x86_64.zig");
 const riscv64 = @import("./riscv64.zig");
 
 noinline fn guestCallee(comptime log: type, ctx: *Cpu.Context) void {
@@ -24,10 +25,24 @@ pub fn main() !void {
     const stack = try std.heap.page_allocator.alignedAlloc(u8, std.mem.page_size, 4 * std.mem.page_size);
     defer std.heap.page_allocator.free(stack);
 
-    var assembler = riscv64.Assembler.init(std.heap.page_allocator);
+    var assembler = switch (builtin.cpu.arch) {
+        .x86_64 => x86_64.Assembler.init(std.heap.page_allocator),
+        .riscv64 => riscv64.Assembler.init(std.heap.page_allocator),
+        else => @compileError("unsupported architecture"),
+    };
     defer assembler.deinit();
-    try assembler.li(.a0, @intFromError(error.Bleh));
-    try assembler.ret();
+
+    switch (builtin.cpu.arch) {
+        .x86_64 => {
+            try assembler.movRegImm(.ax, @intFromError(error.HelloX86_64));
+            try assembler.ret();
+        },
+        .riscv64 => {
+            try assembler.li(.a0, @intFromError(error.HelloRiscv64));
+            try assembler.ret();
+        },
+        else => unreachable,
+    }
     try assembler.makeExecutable();
 
     var cpu = Cpu.init(stack, @ptrCast(assembler.inner.code.items.ptr));

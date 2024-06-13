@@ -1,22 +1,41 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const x86_64 = @import("../x86_64.zig");
+const Assembler = @This();
 
-const Reg = x86_64.Reg;
+const x86_64 = @import("../x86_64.zig");
+const Register = x86_64.Register;
 const Rex = x86_64.Rex;
 const ModRM = x86_64.ModRM;
 const Opcode = x86_64.Opcode;
 
-const CodeBuf = std.ArrayListAligned(u8, std.mem.page_size);
+const GenericAssembler = @import("../Assembler.zig");
 
-pub fn binOpRegReg(
-    code_buf: *CodeBuf,
+inner: GenericAssembler,
+
+pub fn init(allocator: std.mem.Allocator) Assembler {
+    return .{ .inner = GenericAssembler.init(allocator) };
+}
+
+pub fn deinit(self: *Assembler) void {
+    self.inner.deinit();
+}
+
+pub fn makeExecutable(self: *Assembler) !void {
+    try self.inner.makeExecutable(&.{@intFromEnum(Opcode.int3)});
+}
+
+fn writeInt(self: *Assembler, comptime T: type, value: T) !void {
+    try self.inner.writer().writeInt(T, value, .little);
+}
+
+fn binOpRegReg(
+    self: *Assembler,
     opcode: Opcode,
-    dst: Reg,
-    src: Reg,
+    dst: Register,
+    src: Register,
 ) !void {
-    if (dst.region().width() != src.region().width()) {
+    if (dst.region().bits() != src.region().bits()) {
         return error.WidthMismatch;
     }
 
@@ -27,89 +46,100 @@ pub fn binOpRegReg(
     }
 
     if (dst.region() == .word) {
-        try code_buf.append(0x66);
+        try self.writeInt(u8, 0x66);
     }
 
     const dst_ex = dst.isExtendedHalf();
     const src_ex = src.isExtendedHalf();
     if (dst_rex == .mandatory or src_rex == .mandatory) {
-        try code_buf.append(@bitCast(Rex{
+        try self.writeInt(u8, @bitCast(Rex{
             .w = dst.region() == .qword,
             .b = dst_ex,
             .r = src_ex,
         }));
     }
-    try code_buf.append(@intFromEnum(opcode));
-    try code_buf.append(@bitCast(ModRM.register(dst, src)));
+    try self.writeInt(u8, @intFromEnum(opcode));
+    try self.writeInt(u8, @bitCast(ModRM.register(dst, src)));
 }
 
-pub fn binOpRegInOpcodeImm(
-    code_buf: *CodeBuf,
+/// value must fit in dst
+fn binOpRegInOpcodeImm(
+    self: *Assembler,
     opcode: Opcode,
-    dst: Reg,
-    val: i64,
+    dst: Register,
+    value: i64,
 ) !void {
     if (dst.region() == .word) {
-        try code_buf.append(0x66);
+        try self.writeInt(u8, 0x66);
     }
     if (dst.rex() == .mandatory) {
-        try code_buf.append(@bitCast(Rex{
+        try self.writeInt(u8, @bitCast(Rex{
             .w = dst.region() == .qword,
             .b = dst.isExtendedHalf(),
         }));
     }
-    try code_buf.append(@intFromEnum(opcode.plusRegister(dst)));
+    try self.writeInt(u8, @intFromEnum(opcode.plusRegister(dst)));
     switch (dst.region()) {
-        .byte_h, .byte_l => try code_buf.append(@bitCast(@as(i8, @intCast(val)))),
-        .word => try code_buf.appendSlice(std.mem.asBytes(&@as(i16, @intCast(val)))),
-        .dword => try code_buf.appendSlice(std.mem.asBytes(&@as(i32, @intCast(val)))),
-        .qword => try code_buf.appendSlice(std.mem.asBytes(&val)),
+        inline else => |r| try self.writeInt(
+            std.meta.Int(.signed, r.bits()),
+            @intCast(value),
+        ),
     }
 }
 
-pub fn movRegReg(code_buf: *CodeBuf, dst: Reg, src: Reg) !void {
-    return binOpRegReg(
-        code_buf,
-        if (dst.region().width() == 8) .mov_rm8_r8 else .mov_rm_r,
+pub fn movRegReg(self: *Assembler, dst: Register, src: Register) !void {
+    return self.binOpRegReg(
+        if (dst.region().bits() == 8) .mov_rm8_r8 else .mov_rm_r,
         dst,
         src,
     );
 }
 
-pub fn movRegImm(code_buf: *CodeBuf, dst: Reg, val: i64) !void {
+pub fn movRegImm(self: *Assembler, dst: Register, value: i64) !void {
     if (dst.region() == .qword) {
-        if (std.math.cast(i32, val)) |v| {
+        if (std.math.cast(i32, value)) |dword| {
             // we can use a shorter sign-extending instruction if we are moving 32 bits into a 64
             // bit register
-            try code_buf.append(@bitCast(Rex{
+            try self.writeInt(u8, @bitCast(Rex{
                 .w = true,
                 .b = dst.isExtendedHalf(),
             }));
-            try code_buf.append(0xc7);
-            try code_buf.append(@bitCast(ModRM.register(dst, Reg.numbered32(0))));
-            try code_buf.appendSlice(std.mem.asBytes(&v));
+            try self.writeInt(u8, 0xc7);
+            try self.writeInt(u8, @bitCast(ModRM.register(dst, Register.numbered32(0))));
+            try self.writeInt(i32, dword);
             return;
         }
     }
-    return binOpRegInOpcodeImm(
-        code_buf,
+    return self.binOpRegInOpcodeImm(
         switch (dst.region()) {
             .byte_h, .byte_l => .mov_r8_imm8,
             .word, .dword, .qword => .mov_r_imm,
         },
         dst,
-        val,
+        value,
     );
 }
 
-pub fn byteInstruction(code_buf: *CodeBuf, opcode: Opcode) !void {
-    try code_buf.append(@intFromEnum(opcode));
+pub fn ret(self: *Assembler) !void {
+    try self.byteInstruction(.ret);
 }
 
-pub fn byteInstructionRegInOpcode(code_buf: *CodeBuf, opcode: Opcode, register: Reg) !void {
-    try code_buf.append(@intFromEnum(opcode.plusRegister(register)));
+fn byteInstruction(self: *Assembler, opcode: Opcode) !void {
+    try self.writeInt(u8, @intFromEnum(opcode));
 }
 
+fn byteInstructionRegInOpcode(self: *Assembler, opcode: Opcode, register: Register) !void {
+    try self.writeInt(u8, @intFromEnum(opcode.plusRegister(register)));
+}
+
+/// Compare machine code generated by clang with our assembler. If clang exits with code zero, our
+/// assembler must produce the same machine code; otherwise, our assembler must produce some error.
+///
+/// dir:           temporary directory to write files into
+/// expected_fmt:  format string for the (Intel syntax) assembly code to use as input to clang
+/// expected_args: arguments for expected_fmt
+/// actual_func:   function to use to generate code, taking *Assembler as its first argument
+/// func_args:     arguments to pass to actual_func, excluding the assembler pointer
 fn testResultMatches(
     dir: std.fs.Dir,
     comptime expected_fmt: []const u8,
@@ -121,7 +151,8 @@ fn testResultMatches(
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var code_buf = std.ArrayListAligned(u8, std.mem.page_size).init(allocator);
+    var assembler = Assembler.init(allocator);
+    defer assembler.deinit();
 
     var asm_file = try dir.createFile("code.S", .{});
     defer asm_file.close();
@@ -143,17 +174,17 @@ fn testResultMatches(
         });
         try std.testing.expectEqual(0, objcopy_result.term.Exited);
 
-        try @call(.auto, actual_func, .{&code_buf} ++ func_args);
+        try @call(.auto, actual_func, .{&assembler} ++ func_args);
 
         var bin_file = try dir.openFile("code.bin", .{});
         defer bin_file.close();
         var read_buf: [64]u8 = undefined;
         const size = try bin_file.readAll(&read_buf);
 
-        try std.testing.expectEqualSlices(u8, read_buf[0..size], code_buf.items);
+        try std.testing.expectEqualSlices(u8, read_buf[0..size], assembler.inner.code.items);
     } else {
         // our assembler should fail
-        const did_error = if (@call(.auto, actual_func, .{&code_buf} ++ func_args))
+        const did_error = if (@call(.auto, actual_func, .{&assembler} ++ func_args))
             false
         else |_|
             true;
@@ -165,7 +196,7 @@ test "movRegReg" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const regs = [_]Reg{ .al, .ah, .ax, .eax, .rax, .spl, .r8b, .r8w, .r8d, .r8 };
+    const regs = [_]Register{ .al, .ah, .ax, .eax, .rax, .spl, .r8b, .r8w, .r8d, .r8 };
 
     for (regs) |r1| {
         for (regs) |r2| {
@@ -184,11 +215,11 @@ test "movRegImm" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const regs = [_]Reg{ .al, .ah, .ax, .eax, .rax, .spl, .r8b, .r8w, .r8d, .r8 };
+    const regs = [_]Register{ .al, .ah, .ax, .eax, .rax, .spl, .r8b, .r8w, .r8d, .r8 };
     const immediates = [_]i64{ 0x01, 0x0123, 0x01234567, 0x0123456789abcdef };
     for (regs) |r| {
         for (immediates) |i| {
-            const bits = r.region().width();
+            const bits = r.region().bits();
             if (@clz(i) < 64 - bits) {
                 continue;
             }
