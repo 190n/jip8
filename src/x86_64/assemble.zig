@@ -6,12 +6,13 @@ const x86_64 = @import("../x86_64.zig");
 const Reg = x86_64.Reg;
 const Rex = x86_64.Rex;
 const ModRM = x86_64.ModRM;
+const Opcode = x86_64.Opcode;
 
 const CodeBuf = std.ArrayListAligned(u8, std.mem.page_size);
 
 pub fn binOpRegReg(
     code_buf: *CodeBuf,
-    opcode: u8,
+    opcode: Opcode,
     dst: Reg,
     src: Reg,
 ) !void {
@@ -38,13 +39,13 @@ pub fn binOpRegReg(
             .r = src_ex,
         }));
     }
-    try code_buf.append(opcode);
+    try code_buf.append(@intFromEnum(opcode));
     try code_buf.append(@bitCast(ModRM.register(dst, src)));
 }
 
 pub fn binOpRegInOpcodeImm(
     code_buf: *CodeBuf,
-    opcode: u8,
+    opcode: Opcode,
     dst: Reg,
     val: i64,
 ) !void {
@@ -57,7 +58,7 @@ pub fn binOpRegInOpcodeImm(
             .b = dst.isExtendedHalf(),
         }));
     }
-    try code_buf.append(opcode | @as(u8, dst.num()));
+    try code_buf.append(@intFromEnum(opcode.plusRegister(dst)));
     switch (dst.region()) {
         .byte_h, .byte_l => try code_buf.append(@bitCast(@as(i8, @intCast(val)))),
         .word => try code_buf.appendSlice(std.mem.asBytes(&@as(i16, @intCast(val)))),
@@ -69,7 +70,7 @@ pub fn binOpRegInOpcodeImm(
 pub fn movRegReg(code_buf: *CodeBuf, dst: Reg, src: Reg) !void {
     return binOpRegReg(
         code_buf,
-        if (dst.region().width() == 8) 0x88 else 0x89,
+        if (dst.region().width() == 8) .mov_rm8_r8 else .mov_rm_r,
         dst,
         src,
     );
@@ -93,12 +94,20 @@ pub fn movRegImm(code_buf: *CodeBuf, dst: Reg, val: i64) !void {
     return binOpRegInOpcodeImm(
         code_buf,
         switch (dst.region()) {
-            .byte_h, .byte_l => 0xb0,
-            .word, .dword, .qword => 0xb8,
+            .byte_h, .byte_l => .mov_r8_imm8,
+            .word, .dword, .qword => .mov_r_imm,
         },
         dst,
         val,
     );
+}
+
+pub fn byteInstruction(code_buf: *CodeBuf, opcode: Opcode) !void {
+    try code_buf.append(@intFromEnum(opcode));
+}
+
+pub fn byteInstructionRegInOpcode(code_buf: *CodeBuf, opcode: Opcode, register: Reg) !void {
+    try code_buf.append(@intFromEnum(opcode.plusRegister(register)));
 }
 
 fn testResultMatches(

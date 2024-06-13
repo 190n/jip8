@@ -248,3 +248,26 @@ pub const ModRM = packed struct(u8) {
         };
     }
 };
+
+pub const Opcode = enum(u8) {
+    /// Move into an 8-bit register or memory location from an 8-bit register
+    mov_rm8_r8 = 0x88,
+    /// Move into a 16-, 32-, or 64-bit register or memory location from a register of the same size
+    mov_rm_r = 0x89,
+    /// Move an 8-bit immediate into a register
+    mov_r8_imm8 = 0xb0,
+    /// Move a 16-, 32-, or 64-bit immediate into a register
+    mov_r_imm = 0xb8,
+    /// Return from the current function
+    ret = 0xc3,
+    /// Breakpoint trap
+    int3 = 0xcc,
+
+    _,
+
+    /// Combine this opcode with a register in the low 3 bytes (for instructions listed with +rb,
+    /// +rw, +rd, or +ro
+    pub fn plusRegister(self: Opcode, register: Reg) Opcode {
+        return @enumFromInt(@intFromEnum(self) | @as(u8, register.num()));
+    }
+};
