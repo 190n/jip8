@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 
 const Cpu = @import("./chip8.zig").Cpu;
 
-const assemble = @import("./x86_64.zig").assemble;
+const riscv64 = @import("./riscv64.zig");
 
 noinline fn guestCallee(comptime log: type, ctx: *Cpu.Context) void {
     log.info("=> inside guest callee", .{});
@@ -24,7 +24,13 @@ pub fn main() !void {
     const stack = try std.heap.page_allocator.alignedAlloc(u8, std.mem.page_size, 4 * std.mem.page_size);
     defer std.heap.page_allocator.free(stack);
 
-    var cpu = Cpu.init(stack, &guestFn);
+    var assembler = riscv64.Assembler.init(std.heap.page_allocator);
+    defer assembler.deinit();
+    try assembler.li(.a0, @intFromError(error.Bleh));
+    try assembler.ret();
+    try assembler.makeExecutable();
+
+    var cpu = Cpu.init(stack, @ptrCast(assembler.inner.code.items.ptr));
     const log = std.log.scoped(.host);
 
     const retval = blk: while (true) {
