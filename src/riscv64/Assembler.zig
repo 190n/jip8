@@ -30,7 +30,7 @@ fn emit(self: *Assembler, instruction: Instruction) !void {
 
 pub fn addi(self: *Assembler, rd: Register, rs1: Register, value: i12) !void {
     try self.emit(Instruction{ .i = .{
-        .opcode = 0b0010011,
+        .opcode = .op_imm,
         .funct3 = 0b000,
         .rd = rd,
         .rs1 = rs1,
@@ -46,7 +46,7 @@ pub fn li(self: *Assembler, rd: Register, value: i64) !void {
 
 pub fn jalr(self: *Assembler, rd: Register, rs1: Register, offset: i12) !void {
     try self.emit(Instruction{ .i = .{
-        .opcode = 0b1100111,
+        .opcode = .jalr,
         .funct3 = 0b000,
         .rd = rd,
         .rs1 = rs1,
@@ -54,6 +54,10 @@ pub fn jalr(self: *Assembler, rd: Register, rs1: Register, offset: i12) !void {
     } });
 }
 
+pub fn jr(self: *Assembler, rs1: Register, offset: i12) !void {
+    try self.jalr(.zero, rs1, offset);
+}
+
 pub fn ret(self: *Assembler) !void {
-    try self.jalr(.zero, .ra, 0);
+    try self.jr(.ra, 0);
 }
