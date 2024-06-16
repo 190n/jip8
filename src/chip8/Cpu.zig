@@ -15,9 +15,10 @@ pub const Context = extern struct {
     instructions_remaining: u16 = 0,
     did_exit: bool = false,
 
-    pub fn yield(self: *Context) callconv(.C) void {
+    pub fn yield(self: *Context) callconv(.C) *Context {
         self.did_exit = false;
         _ = coroutine.switchStacks(self);
+        return self;
     }
 };
 
