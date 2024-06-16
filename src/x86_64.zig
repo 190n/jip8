@@ -268,6 +268,10 @@ pub const Opcode = enum(u8) {
     jmp8 = 0xeb,
     /// With /4, jump to a register
     jmp = 0xff,
+    /// Push a register to the stack
+    push = 0x50,
+    /// Pop a register from the stack
+    pop = 0x58,
 
     _,
 
