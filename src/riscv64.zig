@@ -40,7 +40,7 @@ pub const Register = enum(u5) {
 
     pub fn compressed(self: Register) ?Compressed {
         return if (8 <= @intFromEnum(self) and @intFromEnum(self) < 16)
-            @enumFromInt(@as(u3, @truncate(self)))
+            @enumFromInt(@as(u3, @truncate(@intFromEnum(self))))
         else
             null;
     }

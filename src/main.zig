@@ -3,23 +3,9 @@ const builtin = @import("builtin");
 
 const Cpu = @import("./chip8.zig").Cpu;
 
-const x86_64 = @import("./x86_64.zig");
-const riscv64 = @import("./riscv64.zig");
-
-noinline fn guestCallee(comptime log: type, ctx: *Cpu.Context) void {
-    log.info("=> inside guest callee", .{});
-    ctx.yield();
-    log.info("=> after yield", .{});
-}
-
-fn guestFn(ctx: *Cpu.Context) callconv(.C) u16 {
-    const log = std.log.scoped(.guest);
-    log.info("inside guest code", .{});
-    guestCallee(log, ctx);
-    ctx.yield();
-    log.info("after second yield, in caller", .{});
-    return @intFromError(error.Meow);
-}
+// pub so refAllDecls sees them
+pub const x86_64 = @import("./x86_64.zig");
+pub const riscv64 = @import("./riscv64.zig");
 
 fn meow(x: u32) callconv(.C) void {
     std.log.info("meow: \"{s}\"", .{std.mem.asBytes(&x)});
@@ -88,5 +74,4 @@ pub const std_options = std.Options{
 
 comptime {
     std.testing.refAllDeclsRecursive(@This());
-    std.testing.refAllDeclsRecursive(@import("./x86_64.zig"));
 }
