@@ -15,6 +15,8 @@ pub fn init(allocator: std.mem.Allocator) Assembler {
 
 pub fn deinit(self: *Assembler) void {
     if (self.state == .executable) {
+        // try to make it writable because allocator will set the freed memory to 0xAA in safe
+        // builds
         if (std.posix.mprotect(self.code.items, std.posix.PROT.READ | std.posix.PROT.WRITE)) {
             self.code.deinit();
         } else |_| {}
