@@ -36,6 +36,19 @@ pub const Register = enum(u5) {
     t5 = 30,
     t6 = 31,
 
+    pub const NonZero = @Type(.{
+        .Enum = .{
+            .tag_type = u5,
+            .decls = &.{},
+            .is_exhaustive = true,
+            .fields = blk: {
+                const reg_fields = @typeInfo(Register).Enum.fields;
+                std.debug.assert(reg_fields[0].value == 0);
+                break :blk reg_fields[1..];
+            },
+        },
+    });
+
     pub const Compressed = enum(u3) { s0, s1, a0, a1, a2, a3, a4, a5 };
 
     pub fn compressed(self: Register) ?Compressed {
@@ -43,6 +56,21 @@ pub const Register = enum(u5) {
             @enumFromInt(@as(u3, @truncate(@intFromEnum(self))))
         else
             null;
+    }
+
+    pub fn nonZero(self: Register) ?NonZero {
+        return if (self == .zero)
+            null
+        else
+            @enumFromInt(@intFromEnum(self));
+    }
+
+    pub fn from(other: anytype) Register {
+        return switch (@TypeOf(other)) {
+            Compressed => @enumFromInt(@as(u5, @intFromEnum(other)) + 8),
+            NonZero => @enumFromInt(@intFromEnum(other)),
+            else => |T| @compileError("wrong type passed to Register.from(): " ++ @typeName(T)),
+        };
     }
 };
 
@@ -124,6 +152,73 @@ pub const Instruction = packed union {
         imm_20: u1,
     },
 
+    pub const Compressed = packed union {
+        cr: packed struct(u16) {
+            op: u2,
+            rs2: Register,
+            rd_rs1: Register,
+            funct4: u4,
+        },
+        ci: packed struct(u16) {
+            op: u2,
+            imm_1: u5,
+            rd_rs1: Register,
+            imm_2: u1,
+            funct3: u3,
+        },
+        css: packed struct(u16) {
+            op: u2,
+            rs2: Register,
+            imm: u6,
+            funct3: u3,
+        },
+        ciw: packed struct(u16) {
+            op: u2,
+            rd: Register.Compressed,
+            imm: u8,
+            funct3: u3,
+        },
+        cl: packed struct(u16) {
+            op: u2,
+            rd: Register.Compressed,
+            imm_1: u2,
+            rs1: Register.Compressed,
+            imm_2: u3,
+            funct3: u3,
+        },
+        cs: packed struct(u16) {
+            op: u2,
+            rs2: Register.Compressed,
+            imm_1: u2,
+            rs1: Register.Compressed,
+            imm_2: u3,
+            funct3: u3,
+        },
+        ca: packed struct(u16) {
+            op: u2,
+            rs2: Register.Compressed,
+            funct2: u2,
+            rd_rs1: Register.Compressed,
+            funct6: u6,
+        },
+        cb: packed struct(u16) {
+            op: u2,
+            offset_1: u5,
+            rd_rs1: Register.Compressed,
+            offset_2: u3,
+            funct3: u3,
+        },
+        cj: packed struct(u16) {
+            op: u2,
+            target: u11,
+            funct3: u3,
+        },
+
+        pub fn any(self: Compressed) AnyInstruction {
+            return .{ .rvc = self };
+        }
+    };
+
     pub fn makeS(opcode: Opcode, funct3: u3, rs1: Register, rs2: Register, imm: u12) Instruction {
         return .{ .s = .{
             .opcode = opcode,
@@ -168,10 +263,12 @@ pub const Instruction = packed union {
 
 pub const AnyInstruction = union(enum) {
     rv: Instruction,
+    rvc: Instruction.Compressed,
 
     pub fn writeTo(self: AnyInstruction, writer: anytype) !void {
         switch (self) {
             .rv => |i| try writer.writeInt(u32, @bitCast(i), .little),
+            .rvc => |i| try writer.writeInt(u16, @bitCast(i), .little),
         }
     }
 };

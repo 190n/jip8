@@ -8,6 +8,8 @@ const Instruction = riscv64.Instruction;
 
 const GenericAssembler = @import("../Assembler.zig");
 
+const assert = std.debug.assert;
+
 inner: GenericAssembler,
 
 pub fn init(allocator: std.mem.Allocator) Assembler {
@@ -20,11 +22,14 @@ pub fn deinit(self: *Assembler) void {
 
 pub fn makeExecutable(self: *Assembler) !void {
     // TODO compressed ebreak
-    const ebreak_bin: u32 = 0x00100073;
-    try self.inner.makeExecutable(std.mem.asBytes(&std.mem.nativeToLittle(u32, ebreak_bin)));
+    const ebreak_bin: u16 = 0x9002;
+    try self.inner.makeExecutable(std.mem.asBytes(&std.mem.nativeToLittle(u16, ebreak_bin)));
 }
 
-fn emit(self: *Assembler, instruction: Instruction) !void {
+fn emit(self: *Assembler, instruction: anytype) !void {
+    if (@TypeOf(instruction) != Instruction and @TypeOf(instruction) != Instruction.Compressed) {
+        @compileError("invalid type passed into emit(): " ++ @typeName(@TypeOf(instruction)));
+    }
     try instruction.any().writeTo(self.inner.writer());
 }
 
@@ -38,7 +43,59 @@ pub fn ebreak(self: *Assembler) !void {
     } });
 }
 
+fn c_addi(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
+    assert(nzimm != 0);
+    const u_nzimm: u6 = @bitCast(nzimm);
+    try self.emit(Instruction.Compressed{ .ci = .{
+        .op = 0b01,
+        .imm_1 = @truncate(u_nzimm),
+        .rd_rs1 = rd,
+        .imm_2 = @truncate(u_nzimm >> 5),
+        .funct3 = 0b000,
+    } });
+}
+
+fn c_addiw(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
+    assert(nzimm != 0);
+    const u_nzimm: u6 = @bitCast(nzimm);
+    try self.emit(Instruction.Compressed{ .ci = .{
+        .op = 0b01,
+        .imm_1 = @truncate(u_nzimm),
+        .rd_rs1 = rd,
+        .imm_2 = @truncate(u_nzimm >> 5),
+        .funct3 = 0b001,
+    } });
+}
+
+fn c_addi16sp(self: *Assembler, nzimm: i6) !void {
+    assert(nzimm != 0);
+
+    const u_nzimm: u6 = @bitCast(nzimm);
+    const wide_nzimm = @as(u10, u_nzimm) << 4;
+    const bits: @Vector(10, u1) = @bitCast(wide_nzimm);
+
+    try self.emit(Instruction.Compressed{ .ci = .{
+        .op = 0b01,
+        .imm_1 = @bitCast(@shuffle(u1, bits, undefined, [_]i32{ 5, 7, 8, 6, 4 })),
+        .rd_rs1 = .sp,
+        .imm_2 = @truncate(wide_nzimm >> 9),
+        .funct3 = 0b011,
+    } });
+}
+
 pub fn addi(self: *Assembler, rd: Register, rs1: Register, value: i12) !void {
+    if (rs1 == .zero) {
+        if (rd.nonZero()) |nz_rd| {
+            if (std.math.cast(i6, value)) |compressed_immediate| {
+                return self.c_li(nz_rd, compressed_immediate);
+            }
+        }
+    } else if (rd == .sp and rs1 == .sp and @rem(value, 16) == 0 and value != 0) {
+        const truncated = @divExact(value, 16);
+        if (std.math.cast(i6, truncated)) |compressed_immediate| {
+            return self.c_addi16sp(compressed_immediate);
+        }
+    }
     try self.emit(Instruction{ .i = .{
         .opcode = .op_imm,
         .funct3 = 0b000,
@@ -101,6 +158,17 @@ fn li32(self: *Assembler, rd: Register, value: i32) !void {
     }
 }
 
+fn c_li(self: *Assembler, rd: Register.NonZero, imm: i6) !void {
+    const u_imm: u6 = @bitCast(imm);
+    try self.emit(Instruction.Compressed{ .ci = .{
+        .op = 0b01,
+        .imm_1 = @truncate(u_imm),
+        .rd_rs1 = Register.from(rd),
+        .imm_2 = @truncate(u_imm >> 5),
+        .funct3 = 0b010,
+    } });
+}
+
 pub fn li(self: *Assembler, rd: Register, value: i64) !void {
     // TODO support more complex cases
     if (std.math.cast(i32, value)) |word_immediate| {
@@ -124,7 +192,35 @@ pub fn li(self: *Assembler, rd: Register, value: i64) !void {
     } else std.debug.panic("{} too big", .{value});
 }
 
+fn c_jr(self: *Assembler, rs1: Register.NonZero) !void {
+    try self.emit(Instruction.Compressed{ .cr = .{
+        .op = 0b10,
+        .rs2 = .zero,
+        .rd_rs1 = Register.from(rs1),
+        .funct4 = 0b1000,
+    } });
+}
+
+fn c_jalr(self: *Assembler, rs1: Register.NonZero) !void {
+    try self.emit(Instruction.Compressed{ .cr = .{
+        .op = 0b10,
+        .rs2 = .zero,
+        .rd_rs1 = Register.from(rs1),
+        .funct4 = 0b1001,
+    } });
+}
+
 pub fn jalr(self: *Assembler, rd: Register, rs1: Register, offset: i12) !void {
+    if (offset == 0) {
+        if (rs1.nonZero()) |nz_rs1| {
+            if (rd == .zero) {
+                return self.c_jr(nz_rs1);
+            } else if (rd == .ra) {
+                return self.c_jalr(nz_rs1);
+            }
+        }
+    }
+
     try self.emit(Instruction{ .i = .{
         .opcode = .jalr,
         .funct3 = 0b000,
@@ -187,7 +283,12 @@ test "li" {
         0,
         1,
         -1,
-        // i12 boundaries, boundaries + 1
+        // i6 boundaries, boundaries + 1
+        -32,
+        31,
+        -33,
+        32,
+        // i12 boundaries
         -0x800,
         -0x801,
         0x7ff,
