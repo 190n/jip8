@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const print = std.fmt.comptimePrint;
 const mem = std.mem;
 
@@ -7,6 +8,15 @@ const Context = Cpu.Context;
 const GuestFunction = Cpu.GuestFunction;
 
 const runReturnHere = @import("../coroutine.zig").runReturnHere;
+
+const FloatWidth = enum { double, single };
+
+const float_width: ?FloatWidth = if (std.Target.riscv.featureSetHas(builtin.cpu.features, .d))
+    .double
+else if (std.Target.riscv.featureSetHas(builtin.cpu.features, .f))
+    .single
+else
+    null;
 
 pub const StackFrame = blk: {
     var saved_int_registers: [13][]const u8 = .{"ra"} ++ .{"invalid"} ** 12;
@@ -19,7 +29,10 @@ pub const StackFrame = blk: {
         /// that determines our alignment
         saved_context_pointer: ?*Context align(16) = null,
 
-        pub const num_saved_regs = saved_int_registers.len + saved_float_registers.len;
+        pub const num_saved_regs = if (float_width == null)
+            saved_int_registers.len
+        else
+            saved_int_registers.len + saved_float_registers.len;
 
         pub fn init(code: GuestFunction) StackFrame {
             var frame = StackFrame{
@@ -62,16 +75,22 @@ pub const StackFrame = blk: {
         offset += 8;
     }
 
-    for (saved_float_registers) |register| {
-        save_code = save_code ++ print(
-            "fsd {s}, {}(sp)\n",
-            .{ register, offset },
-        );
-        restore_code = restore_code ++ print(
-            "fld {s}, {}(sp)\n",
-            .{ register, offset },
-        );
-        offset += 8;
+    if (float_width) |w| {
+        const data_type: u8 = switch (w) {
+            .single => 'w',
+            .double => 'd',
+        };
+        for (saved_float_registers) |register| {
+            save_code = save_code ++ print(
+                "fs{c} {s}, {}(sp)\n",
+                .{ data_type, register, offset },
+            );
+            restore_code = restore_code ++ print(
+                "fl{c} {s}, {}(sp)\n",
+                .{ data_type, register, offset },
+            );
+            offset += 8;
+        }
     }
 
     // return address is saved in another location -- this lets us separate the place we should
