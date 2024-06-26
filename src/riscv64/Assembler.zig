@@ -1,6 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const Assembler = @This();
+
+inner: GenericAssembler,
+feature_set: FeatureSet,
 
 const riscv64 = @import("../riscv64.zig");
 const Register = riscv64.Register;
@@ -10,10 +14,13 @@ const GenericAssembler = @import("../Assembler.zig");
 
 const assert = std.debug.assert;
 
-inner: GenericAssembler,
+const FeatureSet = std.Target.Cpu.Feature.Set;
 
-pub fn init(allocator: std.mem.Allocator) Assembler {
-    return .{ .inner = GenericAssembler.init(allocator) };
+pub fn init(allocator: std.mem.Allocator, feature_set: FeatureSet) Assembler {
+    return .{
+        .inner = GenericAssembler.init(allocator),
+        .feature_set = feature_set,
+    };
 }
 
 pub fn deinit(self: *Assembler) void {
@@ -26,6 +33,29 @@ pub fn makeExecutable(self: *Assembler) !void {
     try self.inner.makeExecutable(std.mem.asBytes(&std.mem.nativeToLittle(u16, ebreak_bin)));
 }
 
+fn permute(n: anytype, comptime order: []const i32) @Type(.{ .Int = .{
+    .signedness = .unsigned,
+    .bits = order.len,
+} }) {
+    comptime for (order) |x| {
+        assert(x >= 0);
+    };
+
+    const T = @TypeOf(n);
+    const bits: @Vector(@typeInfo(T).Int.bits, u1) = @bitCast(n);
+    const shuffled = @shuffle(u1, bits, undefined, order[0..].*);
+    return @bitCast(shuffled);
+}
+
+fn hasFeature(self: *const Assembler, feature: std.Target.riscv.Feature) bool {
+    return std.Target.riscv.featureSetHas(self.feature_set, feature);
+}
+
+fn hasCompressed(self: *const Assembler) bool {
+    // zca = integer-only compressed
+    return self.hasFeature(.c) or self.hasFeature(.zca);
+}
+
 fn emit(self: *Assembler, instruction: anytype) !void {
     if (@TypeOf(instruction) != Instruction and @TypeOf(instruction) != Instruction.Compressed) {
         @compileError("invalid type passed into emit(): " ++ @typeName(@TypeOf(instruction)));
@@ -33,6 +63,7 @@ fn emit(self: *Assembler, instruction: anytype) !void {
     try instruction.any().writeTo(self.inner.writer());
 }
 
+/// Debug breakpoint
 pub fn ebreak(self: *Assembler) !void {
     try self.emit(Instruction{ .i = .{
         .opcode = .system,
@@ -43,7 +74,11 @@ pub fn ebreak(self: *Assembler) !void {
     } });
 }
 
+/// Compressed immediate add
+/// rd += nzimm
+/// nzimm != 0
 fn c_addi(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
+    assert(self.hasCompressed());
     assert(nzimm != 0);
     const u_nzimm: u6 = @bitCast(nzimm);
     try self.emit(Instruction.Compressed{ .ci = .{
@@ -55,7 +90,10 @@ fn c_addi(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
     } });
 }
 
+/// Compressed 32-bit immediate add
+/// rd += nzimm, truncated to 32 bits, then sign-extended to 64
 fn c_addiw(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
+    assert(self.hasCompressed());
     assert(nzimm != 0);
     const u_nzimm: u6 = @bitCast(nzimm);
     try self.emit(Instruction.Compressed{ .ci = .{
@@ -67,33 +105,32 @@ fn c_addiw(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
     } });
 }
 
-fn c_addi16sp(self: *Assembler, nzimm: i6) !void {
+fn c_addi16sp(self: *Assembler, nzimm: i10) !void {
+    assert(self.hasCompressed());
     assert(nzimm != 0);
-
-    const u_nzimm: u6 = @bitCast(nzimm);
-    const wide_nzimm = @as(u10, u_nzimm) << 4;
-    const bits: @Vector(10, u1) = @bitCast(wide_nzimm);
+    assert(@rem(nzimm, 16) == 0);
 
     try self.emit(Instruction.Compressed{ .ci = .{
         .op = 0b01,
-        .imm_1 = @bitCast(@shuffle(u1, bits, undefined, [_]i32{ 5, 7, 8, 6, 4 })),
+        .imm_1 = permute(nzimm, &.{ 5, 7, 8, 6, 4 }),
         .rd_rs1 = .sp,
-        .imm_2 = @truncate(wide_nzimm >> 9),
+        .imm_2 = permute(nzimm, &.{9}),
         .funct3 = 0b011,
     } });
 }
 
 pub fn addi(self: *Assembler, rd: Register, rs1: Register, value: i12) !void {
-    if (rs1 == .zero) {
-        if (rd.nonZero()) |nz_rd| {
-            if (std.math.cast(i6, value)) |compressed_immediate| {
-                return self.c_li(nz_rd, compressed_immediate);
+    if (self.hasCompressed()) {
+        if (rs1 == .zero) {
+            if (rd.nonZero()) |nz_rd| {
+                if (std.math.cast(i6, value)) |compressed_immediate| {
+                    return self.c_li(nz_rd, compressed_immediate);
+                }
             }
-        }
-    } else if (rd == .sp and rs1 == .sp and @rem(value, 16) == 0 and value != 0) {
-        const truncated = @divExact(value, 16);
-        if (std.math.cast(i6, truncated)) |compressed_immediate| {
-            return self.c_addi16sp(compressed_immediate);
+        } else if (rd == .sp and rs1 == .sp and @rem(value, 16) == 0 and value != 0) {
+            if (std.math.cast(i10, value)) |compressed_immediate| {
+                return self.c_addi16sp(compressed_immediate);
+            }
         }
     }
     try self.emit(Instruction{ .i = .{
@@ -159,6 +196,7 @@ fn li32(self: *Assembler, rd: Register, value: i32) !void {
 }
 
 fn c_li(self: *Assembler, rd: Register.NonZero, imm: i6) !void {
+    assert(self.hasCompressed());
     const u_imm: u6 = @bitCast(imm);
     try self.emit(Instruction.Compressed{ .ci = .{
         .op = 0b01,
@@ -174,6 +212,7 @@ pub fn li(self: *Assembler, rd: Register, value: i64) !void {
     if (std.math.cast(i32, value)) |word_immediate| {
         return self.li32(rd, word_immediate);
     } else if (std.math.cast(i44, value)) |word_and_shift| {
+        // TODO: while does not fit in u32, add 12 bits and shift
         var upper: i32 = @truncate(word_and_shift >> 12);
         const lower: i12 = @truncate(word_and_shift);
 
@@ -193,6 +232,7 @@ pub fn li(self: *Assembler, rd: Register, value: i64) !void {
 }
 
 fn c_jr(self: *Assembler, rs1: Register.NonZero) !void {
+    assert(self.hasCompressed());
     try self.emit(Instruction.Compressed{ .cr = .{
         .op = 0b10,
         .rs2 = .zero,
@@ -202,6 +242,7 @@ fn c_jr(self: *Assembler, rs1: Register.NonZero) !void {
 }
 
 fn c_jalr(self: *Assembler, rs1: Register.NonZero) !void {
+    assert(self.hasCompressed());
     try self.emit(Instruction.Compressed{ .cr = .{
         .op = 0b10,
         .rs2 = .zero,
@@ -211,7 +252,7 @@ fn c_jalr(self: *Assembler, rs1: Register.NonZero) !void {
 }
 
 pub fn jalr(self: *Assembler, rd: Register, rs1: Register, offset: i12) !void {
-    if (offset == 0) {
+    if (self.hasCompressed() and offset == 0) {
         if (rs1.nonZero()) |nz_rs1| {
             if (rd == .zero) {
                 return self.c_jr(nz_rs1);
@@ -268,7 +309,40 @@ fn store(self: *Assembler, size: LoadStoreSize, src: Register, offset: i12, base
     ));
 }
 
+fn c_lwsp(self: *Assembler, dst: Register.NonZero, offset: u8) !void {
+    assert(self.hasCompressed());
+    assert(offset % 4 == 0);
+
+    try self.emit(Instruction.Compressed{ .ci = .{
+        .op = 0b10,
+        .imm_1 = permute(offset, &.{ 6, 7, 2, 3, 4 }),
+        .rd_rs1 = Register.from(dst),
+        .imm_2 = @truncate(offset >> 5),
+        .funct3 = 0b010,
+    } });
+}
+
+fn c_ldsp(self: *Assembler, dst: Register.NonZero, offset: u9) !void {
+    assert(self.hasCompressed());
+    assert(offset % 8 == 0);
+
+    try self.emit(Instruction.Compressed{ .ci = .{
+        .op = 0b10,
+        .imm_1 = permute(offset, &.{ 6, 7, 8, 3, 4 }),
+        .rd_rs1 = Register.from(dst),
+        .imm_2 = @truncate(offset >> 5),
+        .funct3 = 0b011,
+    } });
+}
+
 pub fn ld(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+    if (self.hasCompressed() and base == .sp and @rem(offset, 8) == 0) {
+        if (dst.nonZero()) |nz_dst| {
+            if (std.math.cast(u9, offset)) |uimm| {
+                return self.c_ldsp(nz_dst, uimm);
+            }
+        }
+    }
     return self.load(.doubleword, dst, offset, base);
 }
 
@@ -276,7 +350,18 @@ pub fn sd(self: *Assembler, src: Register, offset: i12, base: Register) !void {
     return self.store(.doubleword, src, offset, base);
 }
 
-test "li" {
+pub fn lw(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+    if (self.hasCompressed() and base == .sp and @rem(offset, 4) == 0) {
+        if (dst.nonZero()) |nz_dst| {
+            if (std.math.cast(u8, offset)) |uimm| {
+                return self.c_lwsp(nz_dst, uimm);
+            }
+        }
+    }
+    return self.load(.word, dst, offset, base);
+}
+
+test "load-immediates are executed correctly" {
     if (@import("builtin").cpu.arch != .riscv64) return error.SkipZigTest;
 
     const immediates = [_]i64{
@@ -304,7 +389,7 @@ test "li" {
     };
 
     for (immediates) |i| {
-        var assembler = Assembler.init(std.testing.allocator);
+        var assembler = Assembler.init(std.testing.allocator, builtin.cpu.features);
         defer assembler.deinit();
         try assembler.li(.a0, i);
         try assembler.ret();

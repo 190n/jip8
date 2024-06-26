@@ -17,7 +17,7 @@ pub fn main() !void {
 
     var assembler = switch (builtin.cpu.arch) {
         .x86_64 => x86_64.Assembler.init(std.heap.page_allocator),
-        .riscv64 => riscv64.Assembler.init(std.heap.page_allocator),
+        .riscv64 => riscv64.Assembler.init(std.heap.page_allocator, builtin.cpu.features),
         else => @compileError("unsupported architecture"),
     };
     defer assembler.deinit();
