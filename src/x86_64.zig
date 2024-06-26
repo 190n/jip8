@@ -258,6 +258,8 @@ pub const Opcode = enum(u8) {
     mov_r8_imm8 = 0xb0,
     /// Move a 16-, 32-, or 64-bit immediate into a register
     mov_r_imm = 0xb8,
+    /// Move sign-extended 32-bit immediate into a 64-bit register
+    mov_r_imm32 = 0xc7,
     /// Return from the current function
     ret = 0xc3,
     /// Breakpoint trap

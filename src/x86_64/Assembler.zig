@@ -104,7 +104,7 @@ pub fn movRegImm(self: *Assembler, dst: Register, value: i64) !void {
                 .w = true,
                 .b = dst.isExtendedHalf(),
             }));
-            try self.writeInt(u8, 0xc7);
+            try self.writeInt(u8, @intFromEnum(Opcode.mov_r_imm32));
             try self.writeInt(u8, @bitCast(ModRM.register(dst, Register.numbered32(0))));
             try self.writeInt(i32, dword);
             return;
@@ -232,6 +232,8 @@ fn testResultMatches(
 }
 
 test "movRegReg" {
+    if (@import("builtin").cpu.arch != .x86_64) return error.SkipZigTest;
+
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -251,6 +253,8 @@ test "movRegReg" {
 }
 
 test "movRegImm" {
+    if (@import("builtin").cpu.arch != .x86_64) return error.SkipZigTest;
+
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
