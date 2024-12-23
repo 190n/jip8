@@ -39,6 +39,14 @@ pub fn atOffset(self: *Assembler, index: usize) Assembler {
     return .{ .code = .{ .fixed = std.io.fixedBufferStream(self.code.dynamic.code.items[index..]) } };
 }
 
+/// Returns all the code added to this Assembler since its creation as a slice
+pub fn slice(self: *const Assembler) []const u8 {
+    return switch (self.code) {
+        .dynamic => |d| d.code.items,
+        .fixed => |f| f.buffer[0..f.pos],
+    };
+}
+
 fn writeInt(self: *Assembler, comptime T: type, value: T) !void {
     switch (self.code) {
         inline else => |*c| try c.writer().writeInt(T, value, .little),
@@ -242,7 +250,7 @@ fn testResultMatches(
         var read_buf: [64]u8 = undefined;
         const size = try bin_file.readAll(&read_buf);
 
-        try std.testing.expectEqualSlices(u8, read_buf[0..size], assembler.inner.code.items);
+        try std.testing.expectEqualSlices(u8, read_buf[0..size], assembler.slice());
     } else {
         // our assembler should fail
         const did_error = if (@call(.auto, actual_func, .{&assembler} ++ func_args))

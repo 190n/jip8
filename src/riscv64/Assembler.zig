@@ -473,12 +473,12 @@ test "load-immediates are executed correctly" {
     };
 
     for (immediates) |i| {
-        var assembler = Assembler(builtin.cpu.features).init(std.testing.allocator);
+        var assembler = Assembler.init(std.testing.allocator, builtin.cpu.features);
         defer assembler.deinit();
         try assembler.li(.a0, i);
         try assembler.ret();
         try assembler.makeExecutable();
-        const code: *const fn () callconv(.C) i64 = @ptrCast(assembler.inner.code.items.ptr);
+        const code = assembler.entrypoint(*const fn () callconv(.c) i64, 0);
         try std.testing.expectEqual(i, code());
     }
 }

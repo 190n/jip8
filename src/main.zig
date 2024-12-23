@@ -3,7 +3,6 @@ const builtin = @import("builtin");
 
 const Cpu = @import("./chip8.zig").Cpu;
 
-// pub so refAllDecls sees them
 pub const x86_64 = @import("./x86_64.zig");
 pub const riscv64 = @import("./riscv64.zig");
 
@@ -26,36 +25,11 @@ pub fn main() !void {
 
     switch (builtin.cpu.arch) {
         .x86_64 => {
-            // stack alignment
-            // try assembler.push(.rax);
-
-            // try assembler.insertPatchPoint(x86_64.patch.hostCall(@ptrCast(&Cpu.Context.yield)));
-
-            // try assembler.movRegImm(.rdi, std.mem.readInt(u32, "meow", .little));
-            // try assembler.insertPatchPoint(x86_64.patch.hostCall(@ptrCast(&meow)));
-
-            // try assembler.pop(.rax);
             try assembler.movRegImm(.ax, @intFromError(error.HelloX86_64));
             try assembler.ret();
         },
         .riscv64 => {
-            // try assembler.addi(.sp, .sp, -16);
-            // try assembler.sd(.ra, 0, .sp);
-
-            // // try assembler.li(.a1, @intCast(@intFromPtr(&Cpu.Context.yield)));
-            // // try assembler.jalr(.ra, .a1, 0);
-            // try assembler.insertPatchPoint(riscv64.patch.hostCall(
-            //     @ptrCast(&Cpu.Context.yield),
-            //     .a1,
-            // ));
-
-            // try assembler.li(.a0, std.mem.readInt(u32, "meow", .little));
-            // try assembler.insertPatchPoint(riscv64.patch.hostCall(@ptrCast(&meow), .a1));
-
             try assembler.li(.a0, @intFromError(error.HelloRiscv64));
-
-            // try assembler.ld(.ra, 0, .sp);
-            // try assembler.addi(.sp, .sp, 16);
             try assembler.ret();
         },
         else => unreachable,
@@ -77,6 +51,7 @@ pub const std_options = std.Options{
     .log_level = .info,
 };
 
-comptime {
-    std.testing.refAllDeclsRecursive(@This());
+test {
+    _ = x86_64.Assembler;
+    _ = riscv64.Assembler;
 }
