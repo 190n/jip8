@@ -3,9 +3,6 @@ const builtin = @import("builtin");
 
 const Assembler = @This();
 
-inner: GenericAssembler,
-feature_set: FeatureSet,
-
 const riscv64 = @import("../riscv64.zig");
 const Register = riscv64.Register;
 const Instruction = riscv64.Instruction;
@@ -14,26 +11,89 @@ const GenericAssembler = @import("../Assembler.zig");
 
 const assert = std.debug.assert;
 
-const FeatureSet = std.Target.Cpu.Feature.Set;
+/// RISC-V ISA extensions that are relevant to this assembler
+pub const Features = packed struct {
+    /// C (compressed instruction) extension, minus floating-point loads and stores
+    zca: bool,
+};
 
-pub fn init(allocator: std.mem.Allocator, feature_set: FeatureSet) Assembler {
+code: union(enum) {
+    /// Assembling into a growable buffer
+    dynamic: GenericAssembler,
+    /// Assembling into a fixed slice of memory
+    fixed: std.io.FixedBufferStream([]u8),
+},
+features: Features,
+
+pub fn init(allocator: std.mem.Allocator, feature_set: std.Target.Cpu.Feature.Set) Assembler {
     return .{
-        .inner = GenericAssembler.init(allocator),
-        .feature_set = feature_set,
+        .code = .{ .dynamic = GenericAssembler.init(allocator) },
+        .features = .{
+            .zca = std.Target.riscv.featureSetHasAny(feature_set, [_]std.Target.riscv.Feature{ .c, .zca }),
+        },
     };
 }
 
 pub fn deinit(self: *Assembler) void {
-    self.inner.deinit();
+    switch (self.code) {
+        .dynamic => |*d| d.deinit(),
+        else => {},
+    }
 }
 
 pub fn makeExecutable(self: *Assembler) !void {
-    // TODO compressed ebreak
-    const ebreak_bin: u16 = 0x9002;
-    try self.inner.makeExecutable(std.mem.asBytes(&std.mem.nativeToLittle(u16, ebreak_bin)));
+    const ebreak_bytes = comptime assemble(.{
+        .{ .ebreak, .{} },
+    });
+    try self.code.dynamic.makeExecutable(ebreak_bytes);
 }
 
-fn permute(n: anytype, comptime order: []const i32) @Type(.{ .Int = .{
+pub fn insertBytes(self: *Assembler, bytes: []const u8) !void {
+    switch (self.code) {
+        inline else => |c| try c.writer().writeAll(bytes),
+    }
+}
+
+/// Returns all the code added to this Assembler since its creation as a slice
+pub fn slice(self: *const Assembler) []const u8 {
+    return switch (self.code) {
+        .dynamic => |d| d.code.items,
+        .fixed => |f| f.buffer[0..f.pos],
+    };
+}
+
+/// Returns the code starting at the given offset as a function pointer
+pub fn entrypoint(self: *const Assembler, comptime T: type, offset: usize) T {
+    return self.code.dynamic.entrypoint(T, offset);
+}
+
+/// Return a new Assembler which will write instructions at the given offset into this Assembler
+pub fn atOffset(self: *Assembler, index: usize) Assembler {
+    return .{
+        .code = .{ .fixed = std.io.fixedBufferStream(self.code.dynamic.code.items[index..]) },
+    };
+}
+
+/// instructions: array of tuples containing an enum literal specifying an Assembler function to
+/// call, and tuples specifying the arguments
+/// e.g. .{ .{ .addi, .{ .a0, .a0, 5 } } }
+pub fn assemble(comptime instructions: anytype) []const u8 {
+    // no comptime allocator :(
+    var code: []const u8 = &.{};
+    for (instructions) |i| {
+        const name, const args = i;
+        var single_instruction_buf: [4]u8 = undefined;
+        var assembler: Assembler = .{
+            .code = .{ .fixed = std.io.fixedBufferStream(&single_instruction_buf) },
+            .features = .{ .zca = true },
+        };
+        @call(.auto, @field(Assembler, @tagName(name)), .{&assembler} ++ args) catch unreachable;
+        code = code ++ assembler.slice();
+    }
+    return code;
+}
+
+fn permute(n: anytype, comptime order: []const i32) @Type(.{ .int = .{
     .signedness = .unsigned,
     .bits = order.len,
 } }) {
@@ -42,43 +102,51 @@ fn permute(n: anytype, comptime order: []const i32) @Type(.{ .Int = .{
     };
 
     const T = @TypeOf(n);
-    const bits: @Vector(@typeInfo(T).Int.bits, u1) = @bitCast(n);
+    const bits: @Vector(@typeInfo(T).int.bits, u1) = @bitCast(n);
     const shuffled = @shuffle(u1, bits, undefined, order[0..].*);
     return @bitCast(shuffled);
 }
 
-fn hasFeature(self: *const Assembler, feature: std.Target.riscv.Feature) bool {
-    return std.Target.riscv.featureSetHas(self.feature_set, feature);
-}
-
-fn hasCompressed(self: *const Assembler) bool {
-    // zca = integer-only compressed
-    return self.hasFeature(.c) or self.hasFeature(.zca);
-}
-
 fn emit(self: *Assembler, instruction: anytype) !void {
-    if (@TypeOf(instruction) != Instruction and @TypeOf(instruction) != Instruction.Compressed) {
-        @compileError("invalid type passed into emit(): " ++ @typeName(@TypeOf(instruction)));
+    if (@TypeOf(instruction) != Instruction and
+        @TypeOf(instruction) != Instruction.Compressed)
+    {
+        @compileError("invalid type passed into emit(): " ++
+            @typeName(@TypeOf(instruction)));
     }
-    try instruction.any().writeTo(self.inner.writer());
+    if (@TypeOf(instruction) == Instruction.Compressed) {
+        assert(self.features.zca);
+    }
+    switch (self.code) {
+        inline else => |*c| try instruction.any().writeTo(c.writer()),
+    }
 }
 
 /// Debug breakpoint
 pub fn ebreak(self: *Assembler) !void {
-    try self.emit(Instruction{ .i = .{
-        .opcode = .system,
-        .rd = .zero,
-        .funct3 = 0,
-        .rs1 = .zero,
-        .imm = 1,
-    } });
+    if (self.features.zca) {
+        try self.emit(Instruction.Compressed{ .cr = .{
+            .funct4 = 0b1001,
+            .rd_rs1 = .zero,
+            .rs2 = .zero,
+            .op = 0b10,
+        } });
+    } else {
+        try self.emit(Instruction{ .i = .{
+            .opcode = .system,
+            .rd = .zero,
+            .funct3 = 0,
+            .rs1 = .zero,
+            .imm = 1,
+        } });
+    }
 }
 
 /// Compressed immediate add
 /// rd += nzimm
 /// nzimm != 0
 fn c_addi(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
-    assert(self.hasCompressed());
+    assert(self.features.zca);
     assert(nzimm != 0);
     const u_nzimm: u6 = @bitCast(nzimm);
     try self.emit(Instruction.Compressed{ .ci = .{
@@ -93,7 +161,7 @@ fn c_addi(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
 /// Compressed 32-bit immediate add
 /// rd += nzimm, truncated to 32 bits, then sign-extended to 64
 fn c_addiw(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
-    assert(self.hasCompressed());
+    assert(self.features.zca);
     assert(nzimm != 0);
     const u_nzimm: u6 = @bitCast(nzimm);
     try self.emit(Instruction.Compressed{ .ci = .{
@@ -106,7 +174,7 @@ fn c_addiw(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
 }
 
 fn c_addi16sp(self: *Assembler, nzimm: i10) !void {
-    assert(self.hasCompressed());
+    assert(self.features.zca);
     assert(nzimm != 0);
     assert(@rem(nzimm, 16) == 0);
 
@@ -120,7 +188,7 @@ fn c_addi16sp(self: *Assembler, nzimm: i10) !void {
 }
 
 pub fn addi(self: *Assembler, rd: Register, rs1: Register, value: i12) !void {
-    if (self.hasCompressed()) {
+    if (self.features.zca) {
         if (rs1 == .zero) {
             if (rd.nonZero()) |nz_rd| {
                 if (std.math.cast(i6, value)) |compressed_immediate| {
@@ -196,7 +264,7 @@ fn li32(self: *Assembler, rd: Register, value: i32) !void {
 }
 
 fn c_li(self: *Assembler, rd: Register.NonZero, imm: i6) !void {
-    assert(self.hasCompressed());
+    assert(self.features.zca);
     const u_imm: u6 = @bitCast(imm);
     try self.emit(Instruction.Compressed{ .ci = .{
         .op = 0b01,
@@ -232,7 +300,7 @@ pub fn li(self: *Assembler, rd: Register, value: i64) !void {
 }
 
 fn c_jr(self: *Assembler, rs1: Register.NonZero) !void {
-    assert(self.hasCompressed());
+    assert(self.features.zca);
     try self.emit(Instruction.Compressed{ .cr = .{
         .op = 0b10,
         .rs2 = .zero,
@@ -242,7 +310,7 @@ fn c_jr(self: *Assembler, rs1: Register.NonZero) !void {
 }
 
 fn c_jalr(self: *Assembler, rs1: Register.NonZero) !void {
-    assert(self.hasCompressed());
+    assert(self.features.zca);
     try self.emit(Instruction.Compressed{ .cr = .{
         .op = 0b10,
         .rs2 = .zero,
@@ -252,7 +320,7 @@ fn c_jalr(self: *Assembler, rs1: Register.NonZero) !void {
 }
 
 pub fn jalr(self: *Assembler, rd: Register, rs1: Register, offset: i12) !void {
-    if (self.hasCompressed() and offset == 0) {
+    if (self.features.zca and offset == 0) {
         if (rs1.nonZero()) |nz_rs1| {
             if (rd == .zero) {
                 return self.c_jr(nz_rs1);
@@ -273,6 +341,22 @@ pub fn jalr(self: *Assembler, rd: Register, rs1: Register, offset: i12) !void {
 
 pub fn jr(self: *Assembler, rs1: Register, offset: i12) !void {
     try self.jalr(.zero, rs1, offset);
+}
+
+pub fn jal(self: *Assembler, rd: Register, offset: i21) !void {
+    // TODO compressed
+    assert(@rem(offset, 2) == 0);
+    try self.emit(Instruction.makeJ(.jal, rd, @bitCast(offset)));
+}
+
+/// Shift imm left by 12, sign-extend to 64 bits, add to the address of the auipc instruction, and
+/// store in rd
+pub fn auipc(self: *Assembler, rd: Register, imm: u20) !void {
+    try self.emit(Instruction{ .u = .{
+        .opcode = .auipc,
+        .rd = rd,
+        .imm_31_12 = imm,
+    } });
 }
 
 pub fn ret(self: *Assembler) !void {
@@ -310,7 +394,7 @@ fn store(self: *Assembler, size: LoadStoreSize, src: Register, offset: i12, base
 }
 
 fn c_lwsp(self: *Assembler, dst: Register.NonZero, offset: u8) !void {
-    assert(self.hasCompressed());
+    assert(self.features.zca);
     assert(offset % 4 == 0);
 
     try self.emit(Instruction.Compressed{ .ci = .{
@@ -323,7 +407,7 @@ fn c_lwsp(self: *Assembler, dst: Register.NonZero, offset: u8) !void {
 }
 
 fn c_ldsp(self: *Assembler, dst: Register.NonZero, offset: u9) !void {
-    assert(self.hasCompressed());
+    assert(self.features.zca);
     assert(offset % 8 == 0);
 
     try self.emit(Instruction.Compressed{ .ci = .{
@@ -336,7 +420,7 @@ fn c_ldsp(self: *Assembler, dst: Register.NonZero, offset: u9) !void {
 }
 
 pub fn ld(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
-    if (self.hasCompressed() and base == .sp and @rem(offset, 8) == 0) {
+    if (self.features.zca and base == .sp and @rem(offset, 8) == 0) {
         if (dst.nonZero()) |nz_dst| {
             if (std.math.cast(u9, offset)) |uimm| {
                 return self.c_ldsp(nz_dst, uimm);
@@ -351,7 +435,7 @@ pub fn sd(self: *Assembler, src: Register, offset: i12, base: Register) !void {
 }
 
 pub fn lw(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
-    if (self.hasCompressed() and base == .sp and @rem(offset, 4) == 0) {
+    if (self.features.zca and base == .sp and @rem(offset, 4) == 0) {
         if (dst.nonZero()) |nz_dst| {
             if (std.math.cast(u8, offset)) |uimm| {
                 return self.c_lwsp(nz_dst, uimm);
@@ -389,7 +473,7 @@ test "load-immediates are executed correctly" {
     };
 
     for (immediates) |i| {
-        var assembler = Assembler.init(std.testing.allocator, builtin.cpu.features);
+        var assembler = Assembler(builtin.cpu.features).init(std.testing.allocator);
         defer assembler.deinit();
         try assembler.li(.a0, i);
         try assembler.ret();

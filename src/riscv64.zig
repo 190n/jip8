@@ -36,13 +36,16 @@ pub const Register = enum(u5) {
     t5 = 30,
     t6 = 31,
 
+    /// Frame pointer
+    pub const fp: Register = .s0;
+
     pub const NonZero = @Type(.{
-        .Enum = .{
+        .@"enum" = .{
             .tag_type = u5,
             .decls = &.{},
             .is_exhaustive = true,
             .fields = blk: {
-                const reg_fields = @typeInfo(Register).Enum.fields;
+                const reg_fields = @typeInfo(Register).@"enum".fields;
                 std.debug.assert(reg_fields[0].value == 0);
                 break :blk reg_fields[1..];
             },

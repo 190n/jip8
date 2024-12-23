@@ -11,22 +11,38 @@ const Opcode = x86_64.Opcode;
 
 const GenericAssembler = @import("../Assembler.zig");
 
-inner: GenericAssembler,
+code: union(enum) {
+    dynamic: GenericAssembler,
+    fixed: std.io.FixedBufferStream([]u8),
+},
 
 pub fn init(allocator: std.mem.Allocator) Assembler {
-    return .{ .inner = GenericAssembler.init(allocator) };
+    return .{ .code = .{ .dynamic = GenericAssembler.init(allocator) } };
 }
 
 pub fn deinit(self: *Assembler) void {
-    self.inner.deinit();
+    switch (self.code) {
+        .dynamic => |*d| d.deinit(),
+        else => {},
+    }
 }
 
 pub fn makeExecutable(self: *Assembler) !void {
-    try self.inner.makeExecutable(&.{@intFromEnum(Opcode.int3)});
+    try self.code.dynamic.makeExecutable(&.{@intFromEnum(Opcode.int3)});
+}
+
+pub fn entrypoint(self: *const Assembler, comptime T: type, offset: usize) T {
+    return self.code.dynamic.entrypoint(T, offset);
+}
+
+pub fn atOffset(self: *Assembler, index: usize) Assembler {
+    return .{ .code = .{ .fixed = std.io.fixedBufferStream(self.code.dynamic.code.items[index..]) } };
 }
 
 fn writeInt(self: *Assembler, comptime T: type, value: T) !void {
-    try self.inner.writer().writeInt(T, value, .little);
+    switch (self.code) {
+        inline else => |*c| try c.writer().writeInt(T, value, .little),
+    }
 }
 
 fn binOpRegReg(
@@ -158,7 +174,13 @@ pub fn pop(self: *Assembler, register: Register) !void {
     }
 }
 
-pub fn call(self: *Assembler, register: Register) !void {
+/// offset relative to the next instruction
+pub fn callRelative(self: *Assembler, offset: i32) !void {
+    try self.writeInt(u8, @intFromEnum(Opcode.call));
+    try self.writeInt(i32, offset);
+}
+
+pub fn callIndirect(self: *Assembler, register: Register) !void {
     if (register.region() != .qword) return error.InvalidOperand;
     if (register.isExtendedHalf()) {
         try self.writeInt(u8, @bitCast(Rex{ .b = true }));

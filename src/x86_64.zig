@@ -264,6 +264,8 @@ pub const Opcode = enum(u8) {
     ret = 0xc3,
     /// Breakpoint trap
     int3 = 0xcc,
+    /// Call a signed 32-bit offset from RIP (from instruction after call)
+    call = 0xe8,
     /// Jump to a signed 32-bit offset from RIP (from instruction after jump)
     jmp32 = 0xe9,
     /// Jump to a signed 8-bit offset from RIP (from instruction after jump)
