@@ -50,7 +50,7 @@ pub fn makeExecutable(self: *Assembler) !void {
 
 pub fn insertBytes(self: *Assembler, bytes: []const u8) !void {
     switch (self.code) {
-        inline else => |c| try c.writer().writeAll(bytes),
+        inline else => |*c| try c.writer().writeAll(bytes),
     }
 }
 
@@ -71,6 +71,7 @@ pub fn entrypoint(self: *const Assembler, comptime T: type, offset: usize) T {
 pub fn atOffset(self: *Assembler, index: usize) Assembler {
     return .{
         .code = .{ .fixed = std.io.fixedBufferStream(self.code.dynamic.code.items[index..]) },
+        .features = self.features,
     };
 }
 

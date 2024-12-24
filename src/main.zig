@@ -16,28 +16,25 @@ pub fn main() !void {
     const stack = try std.heap.page_allocator.alignedAlloc(u8, std.mem.page_size, 4 * std.mem.page_size);
     defer std.heap.page_allocator.free(stack);
 
-    var assembler = switch (builtin.cpu.arch) {
-        .x86_64 => x86_64.Assembler.init(std.heap.page_allocator),
-        .riscv64 => riscv64.Assembler.init(std.heap.page_allocator, builtin.cpu.features),
+    var compiler = switch (builtin.cpu.arch) {
+        .x86_64 => @compileError("todo"),
+        .riscv64 => try riscv64.Compiler.init(std.heap.page_allocator, builtin.cpu.features),
         else => @compileError("unsupported architecture"),
     };
-    defer assembler.deinit();
+    defer compiler.deinit();
 
     switch (builtin.cpu.arch) {
-        .x86_64 => {
-            try assembler.movRegImm(.ax, @intFromError(error.HelloX86_64));
-            try assembler.ret();
-        },
         .riscv64 => {
-            try assembler.li(.a0, @intFromError(error.HelloRiscv64));
-            try assembler.ret();
+            try compiler.prologue();
+            try compiler.genSomeCode();
+            try compiler.epilogue();
         },
         else => unreachable,
     }
 
-    try assembler.makeExecutable();
+    try compiler.makeExecutable();
 
-    var cpu = Cpu.init(stack, assembler.entrypoint(Cpu.GuestFunction, 0));
+    var cpu = Cpu.init(stack, compiler.entrypoint());
     const log = std.log.scoped(.host);
 
     const retval = blk: while (true) {

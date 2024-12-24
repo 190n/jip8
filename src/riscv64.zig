@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const Assembler = @import("./riscv64/Assembler.zig");
+pub const Compiler = @import("./riscv64/Compiler.zig");
 
 pub const Register = enum(u5) {
     zero = 0,
