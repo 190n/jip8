@@ -118,7 +118,6 @@ const riscv64_c_trampolines = makeRiscv64Trampolines(true) catch unreachable;
 pub fn Compiler(comptime isa: Isa) type {
     return struct {
         assembler: Assembler,
-        allocator: std.mem.Allocator,
         trampolines: *const HostFunctionTrampolines,
 
         const Self = @This();
@@ -138,7 +137,6 @@ pub fn Compiler(comptime isa: Isa) type {
 
             return .{
                 .assembler = assembler,
-                .allocator = allocator,
                 .trampolines = trampolines,
             };
         }
