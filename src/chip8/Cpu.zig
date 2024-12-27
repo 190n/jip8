@@ -64,7 +64,7 @@ pub fn run(self: *Cpu, instructions: u16) anyerror!void {
     self.context.did_exit = true;
     const retval = coroutine.switchStacks(&self.context);
     if (self.context.did_exit) {
-        const err = @errorFromInt(@as(u16, @intCast(retval)));
+        const err = @errorFromInt(retval);
         self.exit_reason = err;
         return err;
     }

@@ -1,7 +1,6 @@
 const std = @import("std");
 
 pub const Assembler = @import("./riscv64/Assembler.zig");
-pub const Compiler = @import("./riscv64/Compiler.zig");
 
 pub const Register = enum(u5) {
     zero = 0,
@@ -106,6 +105,19 @@ pub const Opcode = enum(u7) {
     jal = 0b11_011_11,
     system = 0b11_100_11,
     op_ve = 0b11_101_11,
+};
+
+/// Used for funct3 in load/store instructions
+const LoadStoreSize = enum(u3) {
+    byte = 0b000,
+    halfword = 0b001,
+    word = 0b010,
+    byte_unsigned = 0b100,
+    halfword_unsigned = 0b101,
+    /// RV64 only
+    word_unsigned = 0b110,
+    /// RV64 only
+    doubleword = 0b011,
 };
 
 pub const Instruction = packed union {

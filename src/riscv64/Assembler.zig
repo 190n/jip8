@@ -8,6 +8,7 @@ const Register = riscv64.Register;
 const Instruction = riscv64.Instruction;
 
 const GenericAssembler = @import("../Assembler.zig");
+pub const Marker = GenericAssembler.Marker;
 
 const assert = std.debug.assert;
 
@@ -15,6 +16,12 @@ const assert = std.debug.assert;
 pub const Features = packed struct {
     /// C (compressed instruction) extension, minus floating-point loads and stores
     zca: bool,
+
+    pub fn from(set: std.Target.Cpu.Feature.Set) Features {
+        return .{
+            .zca = std.Target.riscv.featureSetHasAny(set, [_]std.Target.riscv.Feature{ .c, .zca }),
+        };
+    }
 };
 
 code: union(enum) {
@@ -28,9 +35,14 @@ features: Features,
 pub fn init(allocator: std.mem.Allocator, feature_set: std.Target.Cpu.Feature.Set) Assembler {
     return .{
         .code = .{ .dynamic = GenericAssembler.init(allocator) },
-        .features = .{
-            .zca = std.Target.riscv.featureSetHasAny(feature_set, [_]std.Target.riscv.Feature{ .c, .zca }),
-        },
+        .features = .from(feature_set),
+    };
+}
+
+pub fn initBuffer(buf: []u8, feature_set: std.Target.Cpu.Feature.Set) Assembler {
+    return .{
+        .code = .{ .fixed = std.io.fixedBufferStream(buf) },
+        .features = .from(feature_set),
     };
 }
 
@@ -55,7 +67,11 @@ pub fn insertBytes(self: *Assembler, bytes: []const u8) !void {
 }
 
 /// Returns all the code added to this Assembler since its creation as a slice
-pub fn slice(self: *const Assembler) []const u8 {
+pub fn slice(self: anytype) switch (@TypeOf(self)) {
+    *Assembler => []u8,
+    *const Assembler => []const u8,
+    else => @compileError("invalid type passed to Assembler.slice()"),
+} {
     return switch (self.code) {
         .dynamic => |d| d.code.items,
         .fixed => |f| f.buffer[0..f.pos],
@@ -364,17 +380,7 @@ pub fn ret(self: *Assembler) !void {
     try self.jr(.ra, 0);
 }
 
-const LoadStoreSize = enum(u3) {
-    byte = 0b000,
-    halfword = 0b001,
-    word = 0b010,
-    byte_unsigned = 0b100,
-    halfword_unsigned = 0b101,
-    word_unsigned = 0b110,
-    doubleword = 0b011,
-};
-
-fn load(self: *Assembler, size: LoadStoreSize, dst: Register, offset: i12, base: Register) !void {
+fn load(self: *Assembler, size: riscv64.LoadStoreSize, dst: Register, offset: i12, base: Register) !void {
     try self.emit(Instruction{ .i = .{
         .opcode = .load,
         .funct3 = @intFromEnum(size),
@@ -384,7 +390,7 @@ fn load(self: *Assembler, size: LoadStoreSize, dst: Register, offset: i12, base:
     } });
 }
 
-fn store(self: *Assembler, size: LoadStoreSize, src: Register, offset: i12, base: Register) !void {
+fn store(self: *Assembler, size: riscv64.LoadStoreSize, src: Register, offset: i12, base: Register) !void {
     try self.emit(Instruction.makeS(
         .store,
         @intFromEnum(size),
@@ -444,6 +450,27 @@ pub fn lw(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
         }
     }
     return self.load(.word, dst, offset, base);
+}
+
+/// Get the offset from the start of the code buffer to the position where the next instruction will
+/// be emitted
+pub fn offsetNextInstruction(self: *const Assembler) usize {
+    return switch (self.code) {
+        .dynamic => |d| d.code.items.len,
+        // safety: FixedBufferStream's implementation of getPos function does not mutate
+        .fixed => |*f| @constCast(f).getPos() catch @compileError("error set is not empty"),
+    };
+}
+
+/// Create a marker for the position after all the code emitted so far (or the start of the next
+/// instruction emitted)
+pub fn mark(self: *const Assembler) Marker {
+    return @enumFromInt(self.offsetNextInstruction());
+}
+
+/// Get the distance from the instruction that will be emitted next to the marker m. Always negative.
+pub fn distanceNextInstructionTo(self: *const Assembler, m: Marker) isize {
+    return @as(isize, @intCast(@intFromEnum(m))) - @as(isize, @intCast(self.offsetNextInstruction()));
 }
 
 test "load-immediates are executed correctly" {

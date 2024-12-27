@@ -70,3 +70,6 @@ pub fn entrypoint(self: *const Assembler, comptime T: type, offset: usize) T {
     assert(self.state == .executable);
     return @alignCast(@ptrCast(&self.code.items[offset]));
 }
+
+/// A saved offset into generated machine code
+pub const Marker = enum(usize) { _ };

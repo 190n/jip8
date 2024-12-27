@@ -3,10 +3,11 @@ const builtin = @import("builtin");
 
 const Cpu = @import("./chip8.zig").Cpu;
 
-pub const x86_64 = @import("./x86_64.zig");
-pub const riscv64 = @import("./riscv64.zig");
+const x86_64 = @import("./x86_64.zig");
+const riscv64 = @import("./riscv64.zig");
 
 const Assembler = @import("./Assembler.zig");
+const Compiler = @import("./Compiler.zig").Compiler;
 
 fn meow(x: u32) callconv(.C) void {
     std.log.info("meow: \"{s}\"", .{std.mem.asBytes(&x)});
@@ -18,7 +19,7 @@ pub fn main() !void {
 
     var compiler = switch (builtin.cpu.arch) {
         .x86_64 => @compileError("todo"),
-        .riscv64 => try riscv64.Compiler.init(std.heap.page_allocator, builtin.cpu.features),
+        .riscv64 => try Compiler(.riscv64).init(std.heap.page_allocator, builtin.cpu.features),
         else => @compileError("unsupported architecture"),
     };
     defer compiler.deinit();
