@@ -108,7 +108,7 @@ pub const Opcode = enum(u7) {
 };
 
 /// Used for funct3 in load/store instructions
-const LoadStoreSize = enum(u3) {
+pub const LoadStoreSize = enum(u3) {
     byte = 0b000,
     halfword = 0b001,
     word = 0b010,
