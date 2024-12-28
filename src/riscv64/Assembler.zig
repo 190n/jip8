@@ -91,6 +91,10 @@ pub fn atOffset(self: *Assembler, index: usize) Assembler {
     };
 }
 
+pub fn hasCompressed(self: *const Assembler) bool {
+    return self.features.zca;
+}
+
 /// instructions: array of tuples containing an enum literal specifying an Assembler function to
 /// call, and tuples specifying the arguments
 /// e.g. .{ .{ .addi, .{ .a0, .a0, 5 } } }
@@ -132,7 +136,7 @@ fn emit(self: *Assembler, instruction: anytype) !void {
             @typeName(@TypeOf(instruction)));
     }
     if (@TypeOf(instruction) == Instruction.Compressed) {
-        assert(self.features.zca);
+        assert(self.hasCompressed());
     }
     switch (self.code) {
         inline else => |*c| try instruction.any().writeTo(c.writer()),
@@ -141,7 +145,7 @@ fn emit(self: *Assembler, instruction: anytype) !void {
 
 /// Debug breakpoint
 pub fn ebreak(self: *Assembler) !void {
-    if (self.features.zca) {
+    if (self.hasCompressed()) {
         try self.emit(Instruction.Compressed{ .cr = .{
             .funct4 = 0b1001,
             .rd_rs1 = .zero,
@@ -163,7 +167,7 @@ pub fn ebreak(self: *Assembler) !void {
 /// rd += nzimm
 /// nzimm != 0
 fn c_addi(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
-    assert(self.features.zca);
+    assert(self.hasCompressed());
     assert(nzimm != 0);
     const u_nzimm: u6 = @bitCast(nzimm);
     try self.emit(Instruction.Compressed{ .ci = .{
@@ -178,7 +182,7 @@ fn c_addi(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
 /// Compressed 32-bit immediate add
 /// rd += nzimm, truncated to 32 bits, then sign-extended to 64
 fn c_addiw(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
-    assert(self.features.zca);
+    assert(self.hasCompressed());
     assert(nzimm != 0);
     const u_nzimm: u6 = @bitCast(nzimm);
     try self.emit(Instruction.Compressed{ .ci = .{
@@ -191,7 +195,7 @@ fn c_addiw(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
 }
 
 fn c_addi16sp(self: *Assembler, nzimm: i10) !void {
-    assert(self.features.zca);
+    assert(self.hasCompressed());
     assert(nzimm != 0);
     assert(@rem(nzimm, 16) == 0);
 
@@ -205,7 +209,7 @@ fn c_addi16sp(self: *Assembler, nzimm: i10) !void {
 }
 
 pub fn addi(self: *Assembler, rd: Register, rs1: Register, value: i12) !void {
-    if (self.features.zca) {
+    if (self.hasCompressed()) {
         if (rs1 == .zero) {
             if (rd.nonZero()) |nz_rd| {
                 if (std.math.cast(i6, value)) |compressed_immediate| {
@@ -281,7 +285,7 @@ fn li32(self: *Assembler, rd: Register, value: i32) !void {
 }
 
 fn c_li(self: *Assembler, rd: Register.NonZero, imm: i6) !void {
-    assert(self.features.zca);
+    assert(self.hasCompressed());
     const u_imm: u6 = @bitCast(imm);
     try self.emit(Instruction.Compressed{ .ci = .{
         .op = 0b01,
@@ -317,7 +321,7 @@ pub fn li(self: *Assembler, rd: Register, value: i64) !void {
 }
 
 fn c_jr(self: *Assembler, rs1: Register.NonZero) !void {
-    assert(self.features.zca);
+    assert(self.hasCompressed());
     try self.emit(Instruction.Compressed{ .cr = .{
         .op = 0b10,
         .rs2 = .zero,
@@ -327,7 +331,7 @@ fn c_jr(self: *Assembler, rs1: Register.NonZero) !void {
 }
 
 fn c_jalr(self: *Assembler, rs1: Register.NonZero) !void {
-    assert(self.features.zca);
+    assert(self.hasCompressed());
     try self.emit(Instruction.Compressed{ .cr = .{
         .op = 0b10,
         .rs2 = .zero,
@@ -337,7 +341,7 @@ fn c_jalr(self: *Assembler, rs1: Register.NonZero) !void {
 }
 
 pub fn jalr(self: *Assembler, rd: Register, rs1: Register, offset: i12) !void {
-    if (self.features.zca and offset == 0) {
+    if (self.hasCompressed() and offset == 0) {
         if (rs1.nonZero()) |nz_rs1| {
             if (rd == .zero) {
                 return self.c_jr(nz_rs1);
@@ -401,7 +405,7 @@ fn store(self: *Assembler, size: riscv64.LoadStoreSize, src: Register, offset: i
 }
 
 fn c_lwsp(self: *Assembler, dst: Register.NonZero, offset: u8) !void {
-    assert(self.features.zca);
+    assert(self.hasCompressed());
     assert(offset % 4 == 0);
 
     try self.emit(Instruction.Compressed{ .ci = .{
@@ -414,7 +418,7 @@ fn c_lwsp(self: *Assembler, dst: Register.NonZero, offset: u8) !void {
 }
 
 fn c_ldsp(self: *Assembler, dst: Register.NonZero, offset: u9) !void {
-    assert(self.features.zca);
+    assert(self.hasCompressed());
     assert(offset % 8 == 0);
 
     try self.emit(Instruction.Compressed{ .ci = .{
@@ -427,7 +431,7 @@ fn c_ldsp(self: *Assembler, dst: Register.NonZero, offset: u9) !void {
 }
 
 pub fn ld(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
-    if (self.features.zca and base == .sp and @rem(offset, 8) == 0) {
+    if (self.hasCompressed() and base == .sp and @rem(offset, 8) == 0) {
         if (dst.nonZero()) |nz_dst| {
             if (std.math.cast(u9, offset)) |uimm| {
                 return self.c_ldsp(nz_dst, uimm);
@@ -442,7 +446,7 @@ pub fn sd(self: *Assembler, src: Register, offset: i12, base: Register) !void {
 }
 
 pub fn lw(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
-    if (self.features.zca and base == .sp and @rem(offset, 4) == 0) {
+    if (self.hasCompressed() and base == .sp and @rem(offset, 4) == 0) {
         if (dst.nonZero()) |nz_dst| {
             if (std.math.cast(u8, offset)) |uimm| {
                 return self.c_lwsp(nz_dst, uimm);

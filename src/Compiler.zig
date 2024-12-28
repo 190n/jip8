@@ -128,7 +128,7 @@ pub fn Compiler(comptime isa: Isa) type {
 
         pub fn init(allocator: std.mem.Allocator, feature_set: std.Target.Cpu.Feature.Set) !Self {
             var assembler = Assembler.init(allocator, feature_set);
-            const trampolines = if (assembler.features.zca)
+            const trampolines = if (assembler.hasCompressed())
                 &riscv64_c_trampolines
             else
                 &riscv64_trampolines;
