@@ -249,6 +249,41 @@ pub const ModRM = packed struct(u8) {
     }
 };
 
+pub const Sib = packed struct(u8) {
+    base: Base,
+    index: Index,
+    scale: Scale,
+
+    pub const Base = enum(u3) {
+        eax,
+        ecx,
+        edx,
+        ebx,
+        esp,
+        /// Mod = 0b00: disp32 with no base
+        /// Mod = 0b01: ebp + disp8
+        /// Mod = 0b10: ebp + disp32
+        sometimes_ebp,
+        esi,
+        edi,
+    };
+
+    pub const Index = enum(u3) {
+        eax,
+        ecx,
+        edx,
+        ebx,
+        /// Named eiz or riz by some disassemblers.
+        /// Of dubious utility since with no index you can avoid SIB byte.
+        none,
+        ebp,
+        esi,
+        edi,
+    };
+
+    pub const Scale = enum(u2) { @"1", @"2", @"4", @"8" };
+};
+
 pub const Opcode = enum(u8) {
     /// Move into an 8-bit register or memory location from an 8-bit register
     mov_rm8_r8 = 0x88,
