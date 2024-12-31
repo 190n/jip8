@@ -9,13 +9,15 @@ pub const Isa = enum {
     riscv64,
 };
 
-fn log(a: u32) callconv(.c) void {
-    std.log.scoped(.runtime).info("a = {}", .{a});
+fn debugV0AndV1(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64, a6: u64, a7: u64) callconv(.c) void {
+    std.log.scoped(.callback).info("v0/a6 = {}, v1/a7 = {}", .{ a6, a7 });
 }
 
-const HostFunction = enum {
-    log,
-    yield,
+const HostFunction = std.meta.DeclEnum(host_functions);
+
+const host_functions = struct {
+    pub const yield: *align(@alignOf(fn () callconv(.c) void)) const anyopaque = &chip8.Cpu.Context.yield;
+    pub const debug_v0_and_v1: *align(@alignOf(fn () callconv(.c) void)) const anyopaque = &debugV0AndV1;
 };
 
 const HostFunctionTrampolines = struct {
@@ -23,7 +25,7 @@ const HostFunctionTrampolines = struct {
     /// here using `pointer_offsets` before the code can be called.
     code_template: []const u8,
     /// Tells the size of each function pointer stored at the beginning of code_template
-    pointer_size: usize,
+    pointer_size: enum(u8) { @"32" = 32, @"64" = 64 },
     /// Tells the position where the code for function calls starts
     first_code_offset: usize,
     /// Tells the size of each piece of code to call a function
@@ -43,21 +45,25 @@ const HostFunctionTrampolines = struct {
     /// buf must be the same size as self.code_template.
     pub fn write(self: *const HostFunctionTrampolines, buf: []u8) void {
         @memcpy(buf, self.code_template);
-        inline for (@typeInfo(HostFunction).@"enum".fields) |field| {
-            std.mem.writeInt(
-                u64,
-                buf[8 * field.value ..][0..8],
-                @intFromPtr(host_functions.get(@enumFromInt(field.value))),
-                .little,
-            );
+        inline for (@typeInfo(host_functions).@"struct".decls) |decl| {
+            const id: usize = @intFromEnum(@field(HostFunction, decl.name));
+            switch (self.pointer_size) {
+                inline else => |pointer_size| {
+                    const T = switch (pointer_size) {
+                        .@"32" => u32,
+                        .@"64" => u64,
+                    };
+                    std.mem.writeInt(
+                        T,
+                        buf[@sizeOf(T) * id ..][0..@sizeOf(T)],
+                        @intCast(@intFromPtr(@field(host_functions, decl.name))),
+                        .little,
+                    );
+                },
+            }
         }
     }
 };
-
-const host_functions = std.EnumArray(HostFunction, *const anyopaque).init(.{
-    .log = &log,
-    .yield = &chip8.Cpu.Context.yield,
-});
 
 const x86_64_trampolines = @compileError("todo");
 
@@ -71,7 +77,7 @@ fn makeRiscv64Trampolines(comptime compressed: bool) !HostFunctionTrampolines {
             &.{ .@"64bit", .i }),
     );
 
-    var markers = std.EnumArray(HostFunction, riscv64.Assembler.Marker).initFill(@enumFromInt(std.math.maxInt(usize)));
+    var markers: std.EnumArray(HostFunction, riscv64.Assembler.Marker) = undefined;
 
     for (@typeInfo(HostFunction).@"enum".fields) |field| {
         markers.set(@enumFromInt(field.value), assembler.mark());
@@ -106,7 +112,7 @@ fn makeRiscv64Trampolines(comptime compressed: bool) !HostFunctionTrampolines {
 
     return .{
         .code_template = &constant_code,
-        .pointer_size = 8,
+        .pointer_size = .@"64",
         .first_code_offset = first_code_offset,
         .each_code_size = each_code_size.?,
     };
@@ -142,11 +148,10 @@ pub fn Compiler(comptime isa: Isa) type {
         }
 
         pub fn prologue(self: *Self) !void {
-            try self.assembler.addi(.sp, .sp, -32);
+            try self.assembler.addi(.sp, .sp, -16);
             try self.assembler.sd(.ra, 0, .sp);
             try self.assembler.sd(.s0, 8, .sp);
-            try self.assembler.sd(.s1, 16, .sp);
-            try self.assembler.addi(.s1, .a0, 0);
+            try self.assembler.addi(.s0, .a0, 0);
         }
 
         fn callHost(self: *Self, function: HostFunction) !void {
@@ -155,21 +160,43 @@ pub fn Compiler(comptime isa: Isa) type {
             return self.assembler.jal(.ra, @intCast(trampoline_code_offset - caller_offset));
         }
 
-        pub fn genSomeCode(self: *Self) !void {
-            for (0..3) |_| {
-                try self.assembler.addi(.s0, .s0, 1);
-                try self.assembler.addi(.a0, .s0, 0);
-                try self.callHost(.log);
-                try self.assembler.addi(.a0, .s1, 0);
-                try self.callHost(.yield);
+        fn registerFor(self: *const Self, guest_register: u4) riscv64.Register {
+            _ = self;
+            return @enumFromInt(@as(u5, guest_register) + 16);
+        }
+
+        pub fn compile(self: *Self, instruction: chip8.Instruction) !void {
+            const decoded = instruction.decode();
+            switch (decoded) {
+                .set_register => |ins| {
+                    const vx, const nn = ins;
+                    try self.assembler.li(self.registerFor(vx), nn);
+                },
+                .add_immediate => |ins| {
+                    // TODO mask
+                    const vx, const nn = ins;
+                    try self.assembler.addi(self.registerFor(vx), self.registerFor(vx), nn);
+                    // andi vx, vx, 0xff
+                },
+                .set_register_to_register => |ins| {
+                    const vx, const vy = ins;
+                    try self.assembler.addi(self.registerFor(vx), self.registerFor(vy), 0);
+                },
+                .invalid => try self.assembler.ebreak(),
+                .clear, .ret, .jump, .call, .skip_if_equal, .skip_if_not_equal, .skip_if_registers_equal, .bitwise_or, .bitwise_and, .bitwise_xor, .add_registers, .sub_registers, .shift_right, .sub_registers_reverse, .shift_left, .skip_if_registers_not_equal, .set_i, .jump_v0, .random, .draw, .skip_if_pressed, .skip_if_not_pressed, .read_dt, .wait_for_key, .set_dt, .set_st, .increment_i, .set_i_to_font, .store_bcd, .store, .load => {
+                    std.log.scoped(.compiler).warn("unimplemented chip-8 instruction: {x:0>4} ({s})", .{ @intFromEnum(instruction), @tagName(decoded) });
+                },
             }
+        }
+
+        pub fn debug(self: *Self) !void {
+            try self.callHost(.debug_v0_and_v1);
         }
 
         pub fn epilogue(self: *Self) !void {
             try self.assembler.ld(.ra, 0, .sp);
             try self.assembler.ld(.s0, 8, .sp);
-            try self.assembler.ld(.s1, 16, .sp);
-            try self.assembler.addi(.sp, .sp, 32);
+            try self.assembler.addi(.sp, .sp, 16);
             try self.assembler.li(.a0, @intFromError(error.HelloRiscv64));
             try self.assembler.ret();
         }

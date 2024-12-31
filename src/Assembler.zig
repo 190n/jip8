@@ -72,4 +72,4 @@ pub fn entrypoint(self: *const Assembler, comptime T: type, offset: usize) T {
 }
 
 /// A saved offset into generated machine code
-pub const Marker = enum(usize) { _ };
+pub const Marker = enum(u31) { _ };

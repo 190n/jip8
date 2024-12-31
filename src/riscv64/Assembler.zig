@@ -458,12 +458,12 @@ pub fn lw(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
 
 /// Get the offset from the start of the code buffer to the position where the next instruction will
 /// be emitted
-pub fn offsetNextInstruction(self: *const Assembler) usize {
-    return switch (self.code) {
+pub fn offsetNextInstruction(self: *const Assembler) u31 {
+    return @intCast(switch (self.code) {
         .dynamic => |d| d.code.items.len,
         // safety: FixedBufferStream's implementation of getPos function does not mutate
         .fixed => |*f| @constCast(f).getPos() catch @compileError("error set is not empty"),
-    };
+    });
 }
 
 /// Create a marker for the position after all the code emitted so far (or the start of the next
@@ -473,8 +473,8 @@ pub fn mark(self: *const Assembler) Marker {
 }
 
 /// Get the distance from the instruction that will be emitted next to the marker m. Always negative.
-pub fn distanceNextInstructionTo(self: *const Assembler, m: Marker) isize {
-    return @as(isize, @intCast(@intFromEnum(m))) - @as(isize, @intCast(self.offsetNextInstruction()));
+pub fn distanceNextInstructionTo(self: *const Assembler, m: Marker) i32 {
+    return @as(i32, @intCast(@intFromEnum(m))) - @as(i32, @intCast(self.offsetNextInstruction()));
 }
 
 test "load-immediates are executed correctly" {
