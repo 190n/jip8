@@ -59,7 +59,7 @@ fn binOpRegReg(
     dst: Register,
     src: Register,
 ) !void {
-    if (dst.region().bits() != src.region().bits()) {
+    if (dst.region.bits() != src.region.bits()) {
         return error.WidthMismatch;
     }
 
@@ -69,15 +69,15 @@ fn binOpRegReg(
         return error.IncompatibleArguments;
     }
 
-    if (dst.region() == .word) {
+    if (dst.region == .word) {
         try self.writeInt(u8, 0x66);
     }
 
-    const dst_ex = dst.isExtendedHalf();
-    const src_ex = src.isExtendedHalf();
+    const dst_ex = dst.number.isExtendedHalf();
+    const src_ex = src.number.isExtendedHalf();
     if (dst_rex == .mandatory or src_rex == .mandatory) {
         try self.writeInt(u8, @bitCast(Rex{
-            .w = dst.region() == .qword,
+            .w = dst.region == .qword,
             .b = dst_ex,
             .r = src_ex,
         }));
@@ -93,17 +93,17 @@ fn binOpRegInOpcodeImm(
     dst: Register,
     value: i64,
 ) !void {
-    if (dst.region() == .word) {
+    if (dst.region == .word) {
         try self.writeInt(u8, 0x66);
     }
     if (dst.rex() == .mandatory) {
         try self.writeInt(u8, @bitCast(Rex{
-            .w = dst.region() == .qword,
-            .b = dst.isExtendedHalf(),
+            .w = dst.region == .qword,
+            .b = dst.number.isExtendedHalf(),
         }));
     }
     try self.writeInt(u8, @intFromEnum(opcode.plusRegister(dst)));
-    switch (dst.region()) {
+    switch (dst.region) {
         inline else => |r| try self.writeInt(
             std.meta.Int(.signed, r.bits()),
             @intCast(value),
@@ -113,29 +113,29 @@ fn binOpRegInOpcodeImm(
 
 pub fn movRegReg(self: *Assembler, dst: Register, src: Register) !void {
     return self.binOpRegReg(
-        if (dst.region().bits() == 8) .mov_rm8_r8 else .mov_rm_r,
+        if (dst.region.bits() == 8) .mov_rm8_r8 else .mov_rm_r,
         dst,
         src,
     );
 }
 
 pub fn movRegImm(self: *Assembler, dst: Register, value: i64) !void {
-    if (dst.region() == .qword) {
+    if (dst.region == .qword) {
         if (std.math.cast(i32, value)) |dword| {
             // we can use a shorter sign-extending instruction if we are moving 32 bits into a 64
             // bit register
             try self.writeInt(u8, @bitCast(Rex{
                 .w = true,
-                .b = dst.isExtendedHalf(),
+                .b = dst.number.isExtendedHalf(),
             }));
             try self.writeInt(u8, @intFromEnum(Opcode.mov_r_imm32));
-            try self.writeInt(u8, @bitCast(ModRM.register(dst, Register.numbered32(0))));
+            try self.writeInt(u8, @bitCast(ModRM.register(dst, .eax)));
             try self.writeInt(i32, dword);
             return;
         }
     }
     return self.binOpRegInOpcodeImm(
-        switch (dst.region()) {
+        switch (dst.region) {
             .byte_h, .byte_l => .mov_r8_imm8,
             .word, .dword, .qword => .mov_r_imm,
         },
@@ -157,11 +157,11 @@ fn byteInstructionRegInOpcode(self: *Assembler, opcode: Opcode, register: Regist
 }
 
 pub fn push(self: *Assembler, register: Register) !void {
-    switch (register.region()) {
+    switch (register.region) {
         .byte_l, .byte_h, .dword => return error.InvalidOperand,
         else => |r| {
             if (r == .word) try self.writeInt(u8, 0x66);
-            if (register.isExtendedHalf()) {
+            if (register.number.isExtendedHalf()) {
                 try self.writeInt(u8, @bitCast(Rex{ .b = true }));
             }
             try self.writeInt(u8, @intFromEnum(Opcode.push.plusRegister(register)));
@@ -170,11 +170,11 @@ pub fn push(self: *Assembler, register: Register) !void {
 }
 
 pub fn pop(self: *Assembler, register: Register) !void {
-    switch (register.region()) {
+    switch (register.region) {
         .byte_l, .byte_h, .dword => return error.InvalidOperand,
         else => |r| {
             if (r == .word) try self.writeInt(u8, 0x66);
-            if (register.isExtendedHalf()) {
+            if (register.number.isExtendedHalf()) {
                 try self.writeInt(u8, @bitCast(Rex{ .b = true }));
             }
             try self.writeInt(u8, @intFromEnum(Opcode.pop.plusRegister(register)));
@@ -189,8 +189,8 @@ pub fn callRelative(self: *Assembler, offset: i32) !void {
 }
 
 pub fn callIndirect(self: *Assembler, register: Register) !void {
-    if (register.region() != .qword) return error.InvalidOperand;
-    if (register.isExtendedHalf()) {
+    if (register.region != .qword) return error.InvalidOperand;
+    if (register.number.isExtendedHalf()) {
         try self.writeInt(u8, @bitCast(Rex{ .b = true }));
     }
     try self.writeInt(u8, 0xff);
@@ -274,7 +274,7 @@ test "movRegReg" {
             try testResultMatches(
                 tmp_dir.dir,
                 "mov {s}, {s}",
-                .{ @tagName(r1), @tagName(r2) },
+                .{ r1.name(), r2.name() },
                 movRegReg,
                 .{ r1, r2 },
             );
@@ -292,7 +292,7 @@ test "movRegImm" {
     const immediates = [_]i64{ 0x01, 0x0123, 0x01234567, 0x0123456789abcdef };
     for (regs) |r| {
         for (immediates) |i| {
-            const bits = r.region().bits();
+            const bits = r.region.bits();
             if (@clz(i) < 64 - bits) {
                 continue;
             }
@@ -300,7 +300,7 @@ test "movRegImm" {
             try testResultMatches(
                 tmp_dir.dir,
                 "mov {s}, 0x{x}",
-                .{ @tagName(r), i },
+                .{ r.name(), i },
                 movRegImm,
                 .{ r, i },
             );

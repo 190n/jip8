@@ -1,3 +1,6 @@
+const std = @import("std");
+const assert = std.debug.assert;
+
 pub const Assembler = @import("./x86_64/Assembler.zig");
 
 /// REX prefix, used to access 64-bit registers and r8-r15
@@ -11,30 +14,6 @@ pub const Rex = packed struct(u8) {
     w: bool = false,
 
     _pad: enum(u4) { rex = 0b0100 } = .rex,
-};
-
-/// Specifies which region of a 64-bit register is being referred to
-pub const Region = enum {
-    /// Bits 0:7
-    byte_l,
-    /// Bits 8:15
-    byte_h,
-    /// Bits 0:15
-    word,
-    /// Bits 0:31
-    dword,
-    /// Bits 0:63
-    qword,
-
-    /// Get the number of bits this region takes up
-    pub fn bits(self: Region) u8 {
-        return switch (self) {
-            .byte_l, .byte_h => 8,
-            .word => 16,
-            .dword => 32,
-            .qword => 64,
-        };
-    }
 };
 
 /// Describe who is responsible for saving a register's value across function calls
@@ -56,116 +35,198 @@ pub const RexUsage = enum {
     disallowed,
 };
 
-pub const Register = enum {
-    // zig fmt: off
-    al, cl, dl, bl, spl, bpl, sil, dil, r8b, r9b, r10b, r11b, r12b, r13b, r14b, r15b,
-    ah, ch, dh, bh,
-    ax, cx, dx, bx, sp, bp, si, di, r8w, r9w, r10w, r11w, r12w, r13w, r14w, r15w,
-    eax, ecx, edx, ebx, esp, ebp, esi, edi, r8d, r9d, r10d, r11d, r12d, r13d, r14d, r15d,
-    rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
-    // zig fmt: on
+pub const Register = packed struct {
+    number: Unsized,
+    region: Region,
 
-    /// Get the numeric value of this register for the ModR/M byte
-    pub fn num(self: Register) u3 {
-        return switch (self) {
-            .al, .ax, .eax, .rax => 0,
-            .cl, .cx, .ecx, .rcx => 1,
-            .dl, .dx, .edx, .rdx => 2,
-            .bl, .bx, .ebx, .rbx => 3,
-            .spl, .ah, .sp, .esp, .rsp => 4,
-            .bpl, .ch, .bp, .ebp, .rbp => 5,
-            .sil, .dh, .si, .esi, .rsi => 6,
-            .dil, .bh, .di, .edi, .rdi => 7,
-            .r8b, .r8w, .r8d, .r8 => 0,
-            .r9b, .r9w, .r9d, .r9 => 1,
-            .r10b, .r10w, .r10d, .r10 => 2,
-            .r11b, .r11w, .r11d, .r11 => 3,
-            .r12b, .r12w, .r12d, .r12 => 4,
-            .r13b, .r13w, .r13d, .r13 => 5,
-            .r14b, .r14w, .r14d, .r14 => 6,
-            .r15b, .r15w, .r15d, .r15 => 7,
-        };
-    }
+    /// Specifies one of the 16 general-purpose registers
+    pub const Unsized = enum(u4) {
+        rax,
+        rcx,
+        rdx,
+        rbx,
+        rsp,
+        rbp,
+        rsi,
+        rdi,
+        r8,
+        r9,
+        r10,
+        r11,
+        r12,
+        r13,
+        r14,
+        r15,
 
-    /// Return true if this is one of the registers added with x86_64, r8-r15 (or a part thereof)
-    pub fn isExtendedHalf(self: Register) bool {
-        return switch (self) {
-            .r8b, .r8w, .r8d, .r8 => true,
-            .r9b, .r9w, .r9d, .r9 => true,
-            .r10b, .r10w, .r10d, .r10 => true,
-            .r11b, .r11w, .r11d, .r11 => true,
-            .r12b, .r12w, .r12d, .r12 => true,
-            .r13b, .r13w, .r13d, .r13 => true,
-            .r14b, .r14w, .r14d, .r14 => true,
-            .r15b, .r15w, .r15d, .r15 => true,
-            else => false,
-        };
-    }
+        /// Return true if this is one of the registers added with x86_64, r8-r15 (or a part thereof)
+        pub fn isExtendedHalf(self: Unsized) bool {
+            return @intFromEnum(self) >= 8;
+        }
 
-    /// Indicate which part of a register this register refers to
-    pub fn region(self: Register) Region {
-        return switch (self) {
-            .al, .cl, .dl, .bl, .spl, .bpl, .sil, .dil, .r8b, .r9b, .r10b, .r11b, .r12b, .r13b, .r14b, .r15b => .byte_l,
-            .ah, .ch, .dh, .bh => .byte_h,
-            .ax, .cx, .dx, .bx, .sp, .bp, .si, .di, .r8w, .r9w, .r10w, .r11w, .r12w, .r13w, .r14w, .r15w => .word,
-            .eax, .ecx, .edx, .ebx, .esp, .ebp, .esi, .edi, .r8d, .r9d, .r10d, .r11d, .r12d, .r13d, .r14d, .r15d => .dword,
-            .rax, .rcx, .rdx, .rbx, .rsp, .rbp, .rsi, .rdi, .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15 => .qword,
-        };
-    }
+        /// Determine whether the source or target of a function call is responsible for saving this
+        /// register's value in the x86_64 Linux calling convention
+        pub fn saver(self: Unsized) Saver {
+            return switch (self) {
+                .rax, .rcx, .rdx, .rsi, .rdi, .r8, .r9, .r10, .r11 => .caller,
+                .rbx, .rsp, .rbp, .r12, .r13, .r14, .r15 => .callee,
+            };
+        }
+
+        /// Determine whether bits 8:15 of this register can be addressed (e.g. ah exists but not sph)
+        pub fn hasByteH(self: Unsized) bool {
+            return switch (self) {
+                .rax, .rcx, .rdx, .rbx => true,
+                .rsp, .rbp, .rsi, .rdi, .r8, .r9, .r10, .r11, .r12, .r13, .r14, .r15 => false,
+            };
+        }
+    };
+
+    /// Specifies which region of a 64-bit register is being referred to
+    pub const Region = enum(u3) {
+        /// Bits 0:7
+        byte_l,
+        /// Bits 8:15
+        byte_h,
+        /// Bits 0:15
+        word,
+        /// Bits 0:31
+        dword,
+        /// Bits 0:63
+        qword,
+
+        /// Get the number of bits this region takes up
+        pub fn bits(self: Region) u8 {
+            return switch (self) {
+                .byte_l, .byte_h => 8,
+                .word => 16,
+                .dword => 32,
+                .qword => 64,
+            };
+        }
+    };
 
     /// Determine whether this register places a constraint on whether the REX prefix should be used
     pub fn rex(self: Register) ?RexUsage {
-        if (self.isExtendedHalf() or self.region() == .qword) {
+        if (self.number.isExtendedHalf() or self.region == .qword) {
             return .mandatory;
         }
-        if (self == .spl or self == .bpl or self == .sil or self == .dil) {
+        if ((self.number == .rsp or
+            self.number == .rbp or
+            self.number == .rsi or
+            self.number == .rdi) and self.region == .byte_l)
+        {
             return .mandatory;
         }
-        if (self.region() == .byte_h) {
+        if (self.region == .byte_h) {
             return .disallowed;
         }
         // this register can be used with or without REX
         return null;
     }
 
-    /// Return the 32-bit register numbered n
-    pub fn numbered32(n: u3) Register {
-        return switch (n) {
-            0 => .eax,
-            1 => .ecx,
-            2 => .edx,
-            3 => .ebx,
-            4 => .esp,
-            5 => .ebp,
-            6 => .esi,
-            7 => .edi,
+    pub fn name(self: Register) []const u8 {
+        const names_by_region: [5]?[]const u8 = switch (self.number) {
+            .rax => .{ "al", "ah", "ax", "eax", "rax" },
+            .rcx => .{ "cl", "ch", "cx", "ecx", "rcx" },
+            .rdx => .{ "dl", "dh", "dx", "edx", "rdx" },
+            .rbx => .{ "bl", "bh", "bx", "ebx", "rbx" },
+            .rsp => .{ "spl", null, "sp", "esp", "rsp" },
+            .rbp => .{ "bpl", null, "bp", "ebp", "rbp" },
+            .rsi => .{ "sil", null, "si", "esi", "rsi" },
+            .rdi => .{ "dil", null, "di", "edi", "rdi" },
+            inline else => |num| .{
+                @tagName(num) ++ "b",
+                null,
+                @tagName(num) ++ "w",
+                @tagName(num) ++ "d",
+                @tagName(num),
+            },
         };
+        return names_by_region[@intFromEnum(self.region)].?;
     }
 
-    /// Determine whether the source or target of a function call is responsible for saving this
-    /// register's value
-    pub fn saver(self: Register) Saver {
-        // x86_64 *Linux* calling convention
-        return switch (self) {
-            .bl, .bh, .bx, .ebx, .rbx => .callee,
-            .spl, .sp, .esp, .rsp => .callee,
-            .bpl, .bp, .ebp, .rbp => .callee,
-            .r12b, .r12w, .r12d, .r12 => .callee,
-            .r13b, .r13w, .r13d, .r13 => .callee,
-            .r14b, .r14w, .r14d, .r14 => .callee,
-            .r15b, .r15w, .r15d, .r15 => .callee,
-
-            .al, .ah, .ax, .eax, .rax => .caller,
-            .cl, .ch, .cx, .ecx, .rcx => .caller,
-            .dl, .dh, .dx, .edx, .rdx => .caller,
-            .sil, .si, .esi, .rsi => .caller,
-            .dil, .di, .edi, .rdi => .caller,
-            .r8b, .r8w, .r8d, .r8 => .caller,
-            .r9b, .r9w, .r9d, .r9 => .caller,
-            .r10b, .r10w, .r10d, .r10 => .caller,
-            .r11b, .r11w, .r11d, .r11 => .caller,
-        };
+    /// Return the 3-bit form of this register for ModR/M
+    pub fn lowBits(self: Register) u3 {
+        if (self.region == .byte_h) {
+            assert(self.number.hasByteH());
+            return 4 + @as(u3, @truncate(@intFromEnum(self.number)));
+        } else {
+            return @truncate(@intFromEnum(self.number));
+        }
     }
+
+    pub const al: Register = .{ .number = .rax, .region = .byte_l };
+    pub const cl: Register = .{ .number = .rcx, .region = .byte_l };
+    pub const dl: Register = .{ .number = .rdx, .region = .byte_l };
+    pub const bl: Register = .{ .number = .rbx, .region = .byte_l };
+    pub const spl: Register = .{ .number = .rsp, .region = .byte_l };
+    pub const bpl: Register = .{ .number = .rbp, .region = .byte_l };
+    pub const sil: Register = .{ .number = .rsi, .region = .byte_l };
+    pub const dil: Register = .{ .number = .rdi, .region = .byte_l };
+    pub const r8b: Register = .{ .number = .r8, .region = .byte_l };
+    pub const r9b: Register = .{ .number = .r9, .region = .byte_l };
+    pub const r10b: Register = .{ .number = .r10, .region = .byte_l };
+    pub const r11b: Register = .{ .number = .r11, .region = .byte_l };
+    pub const r12b: Register = .{ .number = .r12, .region = .byte_l };
+    pub const r13b: Register = .{ .number = .r13, .region = .byte_l };
+    pub const r14b: Register = .{ .number = .r14, .region = .byte_l };
+    pub const r15b: Register = .{ .number = .r15, .region = .byte_l };
+
+    pub const ah: Register = .{ .number = .rax, .region = .byte_h };
+    pub const ch: Register = .{ .number = .rcx, .region = .byte_h };
+    pub const dh: Register = .{ .number = .rdx, .region = .byte_h };
+    pub const bh: Register = .{ .number = .rbx, .region = .byte_h };
+
+    pub const ax: Register = .{ .number = .rax, .region = .word };
+    pub const cx: Register = .{ .number = .rcx, .region = .word };
+    pub const dx: Register = .{ .number = .rdx, .region = .word };
+    pub const bx: Register = .{ .number = .rbx, .region = .word };
+    pub const sp: Register = .{ .number = .rsp, .region = .word };
+    pub const bp: Register = .{ .number = .rbp, .region = .word };
+    pub const si: Register = .{ .number = .rsi, .region = .word };
+    pub const di: Register = .{ .number = .rdi, .region = .word };
+    pub const r8w: Register = .{ .number = .r8, .region = .word };
+    pub const r9w: Register = .{ .number = .r9, .region = .word };
+    pub const r10w: Register = .{ .number = .r10, .region = .word };
+    pub const r11w: Register = .{ .number = .r11, .region = .word };
+    pub const r12w: Register = .{ .number = .r12, .region = .word };
+    pub const r13w: Register = .{ .number = .r13, .region = .word };
+    pub const r14w: Register = .{ .number = .r14, .region = .word };
+    pub const r15w: Register = .{ .number = .r15, .region = .word };
+
+    pub const eax: Register = .{ .number = .rax, .region = .dword };
+    pub const ecx: Register = .{ .number = .rcx, .region = .dword };
+    pub const edx: Register = .{ .number = .rdx, .region = .dword };
+    pub const ebx: Register = .{ .number = .rbx, .region = .dword };
+    pub const esp: Register = .{ .number = .rsp, .region = .dword };
+    pub const ebp: Register = .{ .number = .rbp, .region = .dword };
+    pub const esi: Register = .{ .number = .rsi, .region = .dword };
+    pub const edi: Register = .{ .number = .rdi, .region = .dword };
+    pub const r8d: Register = .{ .number = .r8, .region = .dword };
+    pub const r9d: Register = .{ .number = .r9, .region = .dword };
+    pub const r10d: Register = .{ .number = .r10, .region = .dword };
+    pub const r11d: Register = .{ .number = .r11, .region = .dword };
+    pub const r12d: Register = .{ .number = .r12, .region = .dword };
+    pub const r13d: Register = .{ .number = .r13, .region = .dword };
+    pub const r14d: Register = .{ .number = .r14, .region = .dword };
+    pub const r15d: Register = .{ .number = .r15, .region = .dword };
+
+    pub const rax: Register = .{ .number = .rax, .region = .qword };
+    pub const rcx: Register = .{ .number = .rcx, .region = .qword };
+    pub const rdx: Register = .{ .number = .rdx, .region = .qword };
+    pub const rbx: Register = .{ .number = .rbx, .region = .qword };
+    pub const rsp: Register = .{ .number = .rsp, .region = .qword };
+    pub const rbp: Register = .{ .number = .rbp, .region = .qword };
+    pub const rsi: Register = .{ .number = .rsi, .region = .qword };
+    pub const rdi: Register = .{ .number = .rdi, .region = .qword };
+    pub const r8: Register = .{ .number = .r8, .region = .qword };
+    pub const r9: Register = .{ .number = .r9, .region = .qword };
+    pub const r10: Register = .{ .number = .r10, .region = .qword };
+    pub const r11: Register = .{ .number = .r11, .region = .qword };
+    pub const r12: Register = .{ .number = .r12, .region = .qword };
+    pub const r13: Register = .{ .number = .r13, .region = .qword };
+    pub const r14: Register = .{ .number = .r14, .region = .qword };
+    pub const r15: Register = .{ .number = .r15, .region = .qword };
 };
 
 /// Specifies a register in the R/M field when Mod is 00, which means esp and ebp have different meanings
@@ -220,7 +281,7 @@ pub const ModRM = packed struct(u8) {
         return .{
             .mod = .index,
             .rm = @intFromEnum(rm),
-            .reg = reg.num(),
+            .reg = reg.lowBits(),
         };
     }
 
@@ -228,7 +289,7 @@ pub const ModRM = packed struct(u8) {
         return .{
             .mod = .index_with_disp8,
             .rm = @intFromEnum(rm),
-            .reg = reg.num(),
+            .reg = reg.lowBits(),
         };
     }
 
@@ -236,15 +297,15 @@ pub const ModRM = packed struct(u8) {
         return .{
             .mod = .index_with_disp32,
             .rm = @intFromEnum(rm),
-            .reg = reg.num(),
+            .reg = reg.lowBits(),
         };
     }
 
     pub fn register(rm: Register, reg: Register) ModRM {
         return .{
             .mod = .register,
-            .rm = rm.num(),
-            .reg = reg.num(),
+            .rm = rm.lowBits(),
+            .reg = reg.lowBits(),
         };
     }
 };
@@ -317,6 +378,6 @@ pub const Opcode = enum(u8) {
     /// Combine this opcode with a register in the low 3 bytes (for instructions listed with +rb,
     /// +rw, +rd, or +ro
     pub fn plusRegister(self: Opcode, register: Register) Opcode {
-        return @enumFromInt(@intFromEnum(self) | @as(u8, register.num()));
+        return @enumFromInt(@intFromEnum(self) | @as(u8, register.lowBits()));
     }
 };

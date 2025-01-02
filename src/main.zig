@@ -35,7 +35,7 @@ pub fn main() !void {
     try compiler.debug();
     try compiler.epilogue();
 
-    if (comptime builtin.cpu.arch.isRISCV()) {
+    if (comptime builtin.cpu.arch == .riscv64) {
         try compiler.makeExecutable();
 
         var cpu = Cpu.init(stack, compiler.entrypoint());
