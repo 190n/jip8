@@ -7,7 +7,7 @@ const GuestFunction = Cpu.GuestFunction;
 
 const runReturnHere = @import("../coroutine.zig").runReturnHere;
 
-pub const StackFrame = blk: {
+pub const StackFrame = stack_frame: {
     const saved_registers = switch (@import("builtin").target.os.tag) {
         .linux => .{ "rbx", "rbp", "r12", "r13", "r14", "r15" },
         else => |os| @compileError(print("unsupported OS: {s}", .{@tagName(os)})),
@@ -80,5 +80,5 @@ pub const StackFrame = blk: {
         \\
     );
 
-    break :blk StackFrameInner;
+    break :stack_frame StackFrameInner;
 };

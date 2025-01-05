@@ -44,10 +44,10 @@ pub const Register = enum(u5) {
             .tag_type = u5,
             .decls = &.{},
             .is_exhaustive = true,
-            .fields = blk: {
+            .fields = fields: {
                 const reg_fields = @typeInfo(Register).@"enum".fields;
                 std.debug.assert(reg_fields[0].value == 0);
-                break :blk reg_fields[1..];
+                break :fields reg_fields[1..];
             },
         },
     });

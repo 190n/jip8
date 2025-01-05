@@ -18,7 +18,7 @@ else if (std.Target.riscv.featureSetHas(builtin.cpu.features, .f))
 else
     null;
 
-pub const StackFrame = blk: {
+pub const StackFrame = stack_frame: {
     var saved_int_registers: [13][]const u8 = .{"ra"} ++ .{"invalid"} ** 12;
     var saved_float_registers: [12][]const u8 = .{"invalid"} ** 12;
 
@@ -150,5 +150,5 @@ pub const StackFrame = blk: {
             \\
     );
 
-    break :blk StackFrameInner;
+    break :stack_frame StackFrameInner;
 };

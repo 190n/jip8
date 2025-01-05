@@ -41,8 +41,8 @@ pub fn main() !void {
         var cpu = Cpu.init(stack, compiler.entrypoint());
         const log = std.log.scoped(.host);
 
-        const retval = blk: while (true) {
-            cpu.run(0) catch |e| break :blk e;
+        const retval = retval: while (true) {
+            cpu.run(0) catch |e| break :retval e;
             log.info("guest still running", .{});
         };
         log.info("child returned: {}", .{retval});
