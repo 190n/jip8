@@ -18,7 +18,7 @@ pub const StackFrame = stack_frame: {
         /// The address switchStacks() should return to (which is initially the child function)
         return_address: GuestFunction,
         /// The address that the child function should return to when it finishes (does not yield)
-        final_return_address: *const fn () callconv(.C) void,
+        final_return_address: *const fn () callconv(.c) void,
         /// The location of the context struct which is restored by switchStacks when the child function
         /// is returning. Alignment is set to ensure correct x86_64 alignment as if the child function
         /// were an ordinary call -- this field would have been at the stack pointer before the call,

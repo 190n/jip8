@@ -9,7 +9,7 @@ const riscv64 = @import("./riscv64.zig");
 const Assembler = @import("./Assembler.zig");
 const Compiler = @import("./Compiler.zig").Compiler;
 
-fn meow(x: u32) callconv(.C) void {
+fn meow(x: u32) callconv(.c) void {
     std.log.info("meow: \"{s}\"", .{std.mem.asBytes(&x)});
 }
 

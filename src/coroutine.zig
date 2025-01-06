@@ -1,8 +1,8 @@
 const Context = @import("./chip8.zig").Cpu.Context;
 const builtin = @import("builtin");
 
-pub extern fn switchStacks(context: *Context) callconv(.C) u16;
-pub extern fn runReturnHere() callconv(.C) void;
+pub extern fn switchStacks(context: *Context) callconv(.c) u16;
+pub extern fn runReturnHere() callconv(.c) void;
 
 fn unimplementedSwitchStacks(_: *Context) callconv(.c) u16 {
     @panic("unimplemented");

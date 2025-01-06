@@ -15,7 +15,7 @@ pub const Context = extern struct {
     instructions_remaining: u16 = 0,
     did_exit: bool = false,
 
-    pub fn yield(self: *Context) callconv(.C) *Context {
+    pub fn yield(self: *Context) callconv(.c) *Context {
         self.did_exit = false;
         _ = coroutine.switchStacks(self);
         return self;
@@ -30,7 +30,7 @@ exit_reason: ?anyerror = null,
 const stack_align = @alignOf(StackFrame);
 
 /// Signature for the compiled code that will be ran
-pub const GuestFunction = *const fn (context: *Context) callconv(.C) u16;
+pub const GuestFunction = *const fn (context: *Context) callconv(.c) u16;
 
 fn frameLocationFromStack(stack: []align(stack_align) u8) *StackFrame {
     return @ptrFromInt(std.mem.alignBackward(
