@@ -11,7 +11,7 @@ state: enum { writable, executable } = .writable,
 allocator: Allocator,
 
 const assert = std.debug.assert;
-const page_size = std.mem.page_size;
+const page_size = std.heap.page_size_min;
 
 pub fn init(allocator: Allocator) Assembler {
     return .{ .allocator = allocator };

@@ -14,7 +14,7 @@ fn meow(x: u32) callconv(.c) void {
 }
 
 pub fn main() !void {
-    const stack = try std.heap.page_allocator.alignedAlloc(u8, std.mem.page_size, 4 * std.mem.page_size);
+    const stack = try std.heap.page_allocator.alignedAlloc(u8, std.heap.page_size_min, 16 << 10);
     defer std.heap.page_allocator.free(stack);
 
     var compiler = try Compiler(.riscv64).init(std.heap.page_allocator, if (builtin.cpu.arch.isRISCV())
