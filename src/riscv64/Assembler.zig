@@ -380,10 +380,6 @@ pub fn ld(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
     return self.load(.doubleword, dst, offset, base);
 }
 
-pub fn sd(self: *Assembler, src: Register, offset: i12, base: Register) !void {
-    return self.store(.doubleword, src, offset, base);
-}
-
 pub fn lw(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
     if (self.hasCompressed() and base == .sp and @rem(offset, 4) == 0) {
         if (dst.nonZero()) |nz_dst| {
@@ -393,6 +389,27 @@ pub fn lw(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
         }
     }
     return self.load(.word, dst, offset, base);
+}
+
+pub fn sd(self: *Assembler, src: Register, offset: i12, base: Register) !void {
+    // TODO compress, support other sizes
+    return self.store(.doubleword, src, offset, base);
+}
+
+fn c_mv(self: *Assembler, dst: Register.NonZero, src: Register.NonZero) !void {
+    try self.emit(Instruction.Compressed{ .cr = .{
+        .funct4 = 0b1000,
+        .rd_rs1 = .from(dst),
+        .rs2 = .from(src),
+        .op = 0b10,
+    } });
+}
+
+pub fn mv(self: *Assembler, dst: Register, src: Register) !void {
+    if (self.hasCompressed() and dst != .zero and src != .zero) {
+        return self.c_mv(dst.nonZero().?, src.nonZero().?);
+    }
+    return self.addi(dst, src, 0);
 }
 
 test "load-immediates are executed correctly" {

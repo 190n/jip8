@@ -159,7 +159,7 @@ pub fn Compiler(comptime isa: Isa) type {
             try self.assembler.addi(.sp, .sp, -16);
             try self.assembler.sd(.ra, 0, .sp);
             try self.assembler.sd(.s0, 8, .sp);
-            try self.assembler.addi(.s0, .a0, 0);
+            try self.assembler.mv(.s0, .a0);
         }
 
         fn callHost(self: *Self, function: HostFunction) !void {
@@ -190,7 +190,7 @@ pub fn Compiler(comptime isa: Isa) type {
                 },
                 .set_register_to_register => |ins| {
                     const vx, const vy = ins;
-                    try self.assembler.addi(self.registerFor(vx), self.registerFor(vy), 0);
+                    try self.assembler.mv(self.registerFor(vx), self.registerFor(vy));
                 },
                 .invalid => try self.assembler.ebreak(),
 
