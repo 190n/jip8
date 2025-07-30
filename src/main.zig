@@ -34,6 +34,7 @@ pub fn main() !void {
         0x607b, // v0 := 123
         0x8100, // v1 := v0
         0x7105, // v1 += 5
+        0x6f01, // vf := 1
         0x1206, // jump to itself
     }) |ins| {
         try compiler.compile(@enumFromInt(ins));
@@ -48,7 +49,7 @@ pub fn main() !void {
         const log = std.log.scoped(.host);
 
         const retval = retval: while (true) {
-            cpu.run(0) catch |e| break :retval e;
+            cpu.run(10) catch |e| break :retval e;
             log.info("guest still running", .{});
         };
         log.info("child returned: {}", .{retval});

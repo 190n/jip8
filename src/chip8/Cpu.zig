@@ -11,12 +11,20 @@ pub const Context = extern struct {
     /// Saved stack pointer (from the host while running guest code, or from the guest while running
     /// host code)
     stack_pointer: *anyopaque,
+    i: *u8,
+    v: [16]u8,
     /// How many guest instructions are left to be executed
     instructions_remaining: u16 = 0,
     did_exit: bool = false,
+    memory: [4096]u8,
 
     pub fn yield(self: *Context) callconv(.c) *Context {
         self.did_exit = false;
+        std.log.info(
+            "V = {{ {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} }}",
+            .{ self.v[0x0], self.v[0x1], self.v[0x2], self.v[0x3], self.v[0x4], self.v[0x5], self.v[0x6], self.v[0x7], self.v[0x8], self.v[0x9], self.v[0xa], self.v[0xb], self.v[0xc], self.v[0xd], self.v[0xe], self.v[0xf] },
+        );
+        std.log.info("I = {x}", .{@intFromPtr(self.i) -% @intFromPtr(&self.memory)});
         _ = coroutine.switchStacks(self);
         return self;
     }
@@ -45,12 +53,17 @@ fn frameLocation(self: *const Cpu) *StackFrame {
 }
 
 pub fn init(guest_stack: []align(stack_align) u8, code: GuestFunction) Cpu {
-    const cpu = Cpu{
+    var cpu = Cpu{
         .context = .{
             .stack_pointer = frameLocationFromStack(guest_stack),
+            .i = undefined,
+            .v = undefined,
+            .memory = undefined,
         },
         .guest_stack = guest_stack,
     };
+    @memset(&cpu.context.v, 0);
+    @memset(&cpu.context.memory, 0);
     cpu.frameLocation().* = StackFrame.init(code);
     return cpu;
 }

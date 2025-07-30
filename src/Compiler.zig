@@ -19,9 +19,50 @@ fn debugV0AndV1(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64, a6: u64, a7: u64
 const HostFunction = std.meta.DeclEnum(host_functions);
 
 const host_functions = struct {
-    pub const yield: *align(@alignOf(fn () callconv(.c) void)) const anyopaque = &chip8.Cpu.Context.yield;
+    pub const check_remaining: *align(@alignOf(fn () callconv(.c) void)) const anyopaque = &riscvCheckRemaining;
     pub const debug_v0_and_v1: *align(@alignOf(fn () callconv(.c) void)) const anyopaque = &debugV0AndV1;
 };
+
+fn riscvCheckRemaining() callconv(.naked) noreturn {
+    asm volatile (
+        \\beqz s1, yield
+        \\addi s1, s1, -1
+        \\ret
+        \\yield:
+        \\addi sp, sp, -16
+        \\sd ra, 0(sp)
+    );
+
+    asm volatile (std.fmt.comptimePrint("sd a1, {}(a0)", .{@offsetOf(chip8.Cpu.Context, "i")}));
+    inline for (0..16) |vx| {
+        const host = comptime Compiler(.riscv64).hostRegFromV(@intCast(vx));
+        asm volatile (std.fmt.comptimePrint(
+                "sb {s}, {}(a0)",
+                .{ @tagName(host), vx + @offsetOf(chip8.Cpu.Context, "v") },
+            ));
+    }
+
+    asm volatile ("call %[yield]"
+        :
+        : [yield] "X" (&chip8.Cpu.Context.yield),
+    );
+
+    asm volatile (std.fmt.comptimePrint("ld a1, {}(a0)", .{@offsetOf(chip8.Cpu.Context, "i")}));
+    asm volatile (std.fmt.comptimePrint("lhu s1, {}(a0)", .{@offsetOf(chip8.Cpu.Context, "instructions_remaining")}));
+    inline for (0..16) |vx| {
+        const host = comptime Compiler(.riscv64).hostRegFromV(@intCast(vx));
+        asm volatile (std.fmt.comptimePrint(
+                "lbu {s}, {}(a0)",
+                .{ @tagName(host), vx + @offsetOf(chip8.Cpu.Context, "v") },
+            ));
+    }
+
+    asm volatile (
+        \\ld ra, 0(sp)
+        \\addi sp, sp, 16
+        \\ret
+    );
+}
 
 const HostFunctionTrampolines = struct {
     /// Contains the actual code but null function pointers. The function pointers must be written
@@ -168,29 +209,32 @@ pub fn Compiler(comptime isa: Isa) type {
             return self.assembler.jal(.ra, @intCast(trampoline_code_offset - caller_offset));
         }
 
-        fn registerFor(self: *const Self, guest_register: u4) switch (isa) {
+        fn hostRegFromV(guest_register: u4) switch (isa) {
             .riscv64 => riscv64.Register,
             else => unreachable,
         } {
-            _ = self;
             return @enumFromInt(@as(u5, guest_register) + 16);
         }
 
+        const ctx_reg = riscv64.Register.a0;
+        const i_reg = riscv64.Register.a1;
+
         pub fn compile(self: *Self, instruction: chip8.Instruction) !void {
             const decoded = instruction.decode();
+            try self.callHost(.check_remaining);
             switch (decoded) {
                 .set_register => |ins| {
                     const vx, const nn = ins;
-                    try self.assembler.li(self.registerFor(vx), nn);
+                    try self.assembler.li(hostRegFromV(vx), nn);
                 },
                 .add_immediate => |ins| {
                     const vx, const nn = ins;
-                    try self.assembler.addi(self.registerFor(vx), self.registerFor(vx), nn);
+                    try self.assembler.addi(hostRegFromV(vx), hostRegFromV(vx), nn);
                     // TODO: andi vx, vx, 0xff
                 },
                 .set_register_to_register => |ins| {
                     const vx, const vy = ins;
-                    try self.assembler.mv(self.registerFor(vx), self.registerFor(vy));
+                    try self.assembler.mv(hostRegFromV(vx), hostRegFromV(vy));
                 },
                 .invalid => try self.assembler.ebreak(),
 
