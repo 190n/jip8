@@ -281,7 +281,7 @@ pub const AnyInstruction = union(enum) {
     rv: Instruction,
     rvc: Instruction.Compressed,
 
-    pub fn writeTo(self: AnyInstruction, writer: anytype) !void {
+    pub fn writeTo(self: AnyInstruction, writer: *std.io.Writer) !void {
         switch (self) {
             .rv => |i| try writer.writeInt(u32, @bitCast(i), .little),
             .rvc => |i| try writer.writeInt(u16, @bitCast(i), .little),

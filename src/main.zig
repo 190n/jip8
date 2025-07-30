@@ -34,7 +34,7 @@ pub fn main() !void {
         0x607b, // v0 := 123
         0x8100, // v1 := v0
         0x7105, // v1 += 5
-        0x1206,
+        0x1206, // jump to itself
     }) |ins| {
         try compiler.compile(@enumFromInt(ins));
     }
