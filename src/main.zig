@@ -6,7 +6,6 @@ const Cpu = @import("./chip8.zig").Cpu;
 const x86_64 = @import("./x86_64.zig");
 const riscv64 = @import("./riscv64.zig");
 
-const Assembler = @import("./Assembler.zig");
 const Compiler = @import("./Compiler.zig").Compiler;
 
 fn meow(x: u32) callconv(.c) void {
@@ -14,14 +13,21 @@ fn meow(x: u32) callconv(.c) void {
 }
 
 pub fn main() !void {
-    const stack = try std.heap.page_allocator.alignedAlloc(u8, std.heap.page_size_min, 16 << 10);
+    const stack = try std.heap.page_allocator.alignedAlloc(
+        u8,
+        .fromByteUnits(std.heap.page_size_min),
+        16 << 10,
+    );
     defer std.heap.page_allocator.free(stack);
 
-    var compiler = try Compiler(.riscv64).init(std.heap.page_allocator, if (builtin.cpu.arch.isRISCV())
+    var compiler: Compiler(.riscv64) = undefined;
+    try compiler.init(std.heap.page_allocator, if (builtin.cpu.arch.isRISCV())
         builtin.cpu.features
     else
         std.Target.riscv.featureSet(&.{ .@"64bit", .c }));
-    defer compiler.deinit();
+    defer {
+        compiler.deinit() catch unreachable;
+    }
 
     try compiler.prologue();
     for ([_]u16{
@@ -47,7 +53,7 @@ pub fn main() !void {
         };
         log.info("child returned: {}", .{retval});
     } else {
-        const code = compiler.assembler.slice();
+        const code = compiler.code_buffer.writable.list.items;
         std.log.info("generated code: {x}", .{code});
     }
 }

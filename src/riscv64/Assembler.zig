@@ -7,8 +7,7 @@ const riscv64 = @import("../riscv64.zig");
 const Register = riscv64.Register;
 const Instruction = riscv64.Instruction;
 
-const GenericAssembler = @import("../Assembler.zig");
-pub const Marker = GenericAssembler.Marker;
+const code_buffer = @import("../code_buffer.zig");
 
 const assert = std.debug.assert;
 
@@ -24,70 +23,14 @@ pub const Features = packed struct {
     }
 };
 
-code: union(enum) {
-    /// Assembling into a growable buffer
-    dynamic: GenericAssembler,
-    /// Assembling into a fixed slice of memory
-    fixed: std.io.FixedBufferStream([]u8),
-},
+/// TODO: delete
+writer: *std.io.Writer,
 features: Features,
 
-pub fn init(allocator: std.mem.Allocator, feature_set: std.Target.Cpu.Feature.Set) Assembler {
+pub fn init(writer: *std.io.Writer, feature_set: std.Target.Cpu.Feature.Set) Assembler {
     return .{
-        .code = .{ .dynamic = GenericAssembler.init(allocator) },
+        .writer = writer,
         .features = .from(feature_set),
-    };
-}
-
-pub fn initBuffer(buf: []u8, feature_set: std.Target.Cpu.Feature.Set) Assembler {
-    return .{
-        .code = .{ .fixed = std.io.fixedBufferStream(buf) },
-        .features = .from(feature_set),
-    };
-}
-
-pub fn deinit(self: *Assembler) void {
-    switch (self.code) {
-        .dynamic => |*d| d.deinit(),
-        else => {},
-    }
-}
-
-pub fn makeExecutable(self: *Assembler) !void {
-    const ebreak_bytes = comptime assemble(.{
-        .{ .ebreak, .{} },
-    });
-    try self.code.dynamic.makeExecutable(ebreak_bytes);
-}
-
-pub fn insertBytes(self: *Assembler, bytes: []const u8) !void {
-    switch (self.code) {
-        inline else => |*c| try c.writer().writeAll(bytes),
-    }
-}
-
-/// Returns all the code added to this Assembler since its creation as a slice
-pub fn slice(self: anytype) switch (@TypeOf(self)) {
-    *Assembler => []u8,
-    *const Assembler => []const u8,
-    else => @compileError("invalid type passed to Assembler.slice()"),
-} {
-    return switch (self.code) {
-        .dynamic => |d| d.code.items,
-        .fixed => |f| f.buffer[0..f.pos],
-    };
-}
-
-/// Returns the code starting at the given offset as a function pointer
-pub fn entrypoint(self: *const Assembler, comptime T: type, offset: usize) T {
-    return self.code.dynamic.entrypoint(T, offset);
-}
-
-/// Return a new Assembler which will write instructions at the given offset into this Assembler
-pub fn atOffset(self: *Assembler, index: usize) Assembler {
-    return .{
-        .code = .{ .fixed = std.io.fixedBufferStream(self.code.dynamic.code.items[index..]) },
-        .features = self.features,
     };
 }
 
@@ -104,10 +47,8 @@ pub fn assemble(comptime instructions: anytype) []const u8 {
     for (instructions) |i| {
         const name, const args = i;
         var single_instruction_buf: [4]u8 = undefined;
-        var assembler: Assembler = .{
-            .code = .{ .fixed = std.io.fixedBufferStream(&single_instruction_buf) },
-            .features = .{ .zca = true },
-        };
+        var writer: std.io.Writer = .fixed(&single_instruction_buf);
+        var assembler: Assembler = .init(&writer, .{ .zca = true });
         @call(.auto, @field(Assembler, @tagName(name)), .{&assembler} ++ args) catch unreachable;
         code = code ++ assembler.slice();
     }
@@ -138,9 +79,7 @@ fn emit(self: *Assembler, instruction: anytype) !void {
     if (@TypeOf(instruction) == Instruction.Compressed) {
         assert(self.hasCompressed());
     }
-    switch (self.code) {
-        inline else => |*c| try instruction.any().writeTo(c.writer()),
-    }
+    try instruction.any().writeTo(self.writer);
 }
 
 /// Debug breakpoint
@@ -456,27 +395,6 @@ pub fn lw(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
     return self.load(.word, dst, offset, base);
 }
 
-/// Get the offset from the start of the code buffer to the position where the next instruction will
-/// be emitted
-pub fn offsetNextInstruction(self: *const Assembler) u31 {
-    return @intCast(switch (self.code) {
-        .dynamic => |d| d.code.items.len,
-        // safety: FixedBufferStream's implementation of getPos function does not mutate
-        .fixed => |*f| @constCast(f).getPos() catch @compileError("error set is not empty"),
-    });
-}
-
-/// Create a marker for the position after all the code emitted so far (or the start of the next
-/// instruction emitted)
-pub fn mark(self: *const Assembler) Marker {
-    return @enumFromInt(self.offsetNextInstruction());
-}
-
-/// Get the distance from the instruction that will be emitted next to the marker m. Always negative.
-pub fn distanceNextInstructionTo(self: *const Assembler, m: Marker) i32 {
-    return @as(i32, @intCast(@intFromEnum(m))) - @as(i32, @intCast(self.offsetNextInstruction()));
-}
-
 test "load-immediates are executed correctly" {
     if (@import("builtin").cpu.arch != .riscv64) return error.SkipZigTest;
 
@@ -505,12 +423,16 @@ test "load-immediates are executed correctly" {
     };
 
     for (immediates) |i| {
-        var assembler = Assembler.init(std.testing.allocator, builtin.cpu.features);
-        defer assembler.deinit();
+        var any: code_buffer.Any = .{ .writable = .init(std.testing.allocator) };
+        defer {
+            any.makeWritable() catch unreachable;
+            any.writable.deinit();
+        }
+        var assembler: Assembler = .init(&any.writable.interface, builtin.cpu.features);
         try assembler.li(.a0, i);
         try assembler.ret();
-        try assembler.makeExecutable();
-        const code = assembler.entrypoint(*const fn () callconv(.c) i64, 0);
+        try any.makeExecutable(&.{});
+        const code = any.executable.entrypoint(*const fn () callconv(.c) i64, 0);
         try std.testing.expectEqual(i, code());
     }
 }

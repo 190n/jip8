@@ -9,7 +9,7 @@ const Rex = x86_64.Rex;
 const ModRM = x86_64.ModRM;
 const Opcode = x86_64.Opcode;
 
-const GenericAssembler = @import("../Assembler.zig");
+const GenericAssembler = @compileError("don't reference");
 
 code: union(enum) {
     dynamic: GenericAssembler,
