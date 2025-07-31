@@ -31,15 +31,32 @@ pub fn main() !void {
 
     try compiler.prologue();
     for ([_]u16{
-        0x607b, // v0 := 123
-        0x8100, // v1 := v0
-        0x7105, // v1 += 5
-        0x6f01, // vf := 1
-        0x1206, // jump to itself
+        // set V0-VF to 0x00, 0x11, ..., 0xFF
+        0x6000,
+        0x6111,
+        0x6222,
+        0x6333,
+        0x6444,
+        0x6555,
+        0x6666,
+        0x6777,
+        0x6888,
+        0x6999,
+        0x6aaa,
+        0x6bbb,
+        0x6ccc,
+        0x6ddd,
+        0x6eee,
+        0x6fff,
+        // I = 0x400
+        0xa400,
+        // store all registers
+        0xff55,
+        // basically a nop so we can see what I was set to after
+        0x7000,
     }) |ins| {
         try compiler.compile(@enumFromInt(ins));
     }
-    try compiler.debug();
     try compiler.epilogue();
 
     if (comptime builtin.cpu.arch == .riscv64) {
@@ -49,10 +66,13 @@ pub fn main() !void {
         const log = std.log.scoped(.host);
 
         const retval = retval: while (true) {
-            cpu.run(10) catch |e| break :retval e;
+            cpu.run(0) catch |e| break :retval e;
             log.info("guest still running", .{});
         };
         log.info("child returned: {}", .{retval});
+        for (0x400..0x410) |i| {
+            log.info("memory[{x}] = {x}", .{ i, cpu.context.memory[i] });
+        }
     } else {
         const code = compiler.code_buffer.writable.list.items;
         std.log.info("generated code: {x}", .{code});

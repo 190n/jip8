@@ -3,6 +3,7 @@ const std = @import("std");
 const riscv64 = @import("./riscv64.zig");
 const x86_64 = @import("./x86_64.zig");
 const chip8 = @import("./chip8.zig");
+const Context = chip8.Cpu.Context;
 const code_buffer = @import("./code_buffer.zig");
 
 pub const Isa = enum {
@@ -10,20 +11,17 @@ pub const Isa = enum {
     riscv64,
 };
 
-// first 6 parameters are a hack to push a6 and a7 into the risc-v registers a6 and a7
-// so that less data movement is needed before calling this
-fn debugV0AndV1(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64, a6: u64, a7: u64) callconv(.c) void {
-    std.log.scoped(.callback).info("v0/a6 = {}, v1/a7 = {}", .{ a6, a7 });
-}
-
 const HostFunction = std.meta.DeclEnum(host_functions);
 
 const host_functions = struct {
     pub const check_remaining: *align(@alignOf(fn () callconv(.c) void)) const anyopaque = &riscvCheckRemaining;
-    pub const debug_v0_and_v1: *align(@alignOf(fn () callconv(.c) void)) const anyopaque = &debugV0AndV1;
 };
 
 fn riscvCheckRemaining() callconv(.naked) noreturn {
+    // TODO:
+    // assemble this code into the JIT region, and use hostCall to call yield
+    // so that the fast path is a jump nearby and only the uncommon case of
+    // actually yielding has to read the address and indirect call
     asm volatile (
         \\beqz s1, yield
         \\addi s1, s1, -1
@@ -33,27 +31,27 @@ fn riscvCheckRemaining() callconv(.naked) noreturn {
         \\sd ra, 0(sp)
     );
 
-    asm volatile (std.fmt.comptimePrint("sd a1, {}(a0)", .{@offsetOf(chip8.Cpu.Context, "i")}));
+    asm volatile (std.fmt.comptimePrint("sd a1, {}(a0)", .{@offsetOf(Context, "i")}));
     inline for (0..16) |vx| {
         const host = comptime Compiler(.riscv64).hostRegFromV(@intCast(vx));
         asm volatile (std.fmt.comptimePrint(
                 "sb {s}, {}(a0)",
-                .{ @tagName(host), vx + @offsetOf(chip8.Cpu.Context, "v") },
+                .{ @tagName(host), vx + @offsetOf(Context, "v") },
             ));
     }
 
     asm volatile ("call %[yield]"
         :
-        : [yield] "X" (&chip8.Cpu.Context.yield),
+        : [yield] "X" (&Context.yield),
     );
 
-    asm volatile (std.fmt.comptimePrint("ld a1, {}(a0)", .{@offsetOf(chip8.Cpu.Context, "i")}));
-    asm volatile (std.fmt.comptimePrint("lhu s1, {}(a0)", .{@offsetOf(chip8.Cpu.Context, "instructions_remaining")}));
+    asm volatile (std.fmt.comptimePrint("ld a1, {}(a0)", .{@offsetOf(Context, "i")}));
+    asm volatile (std.fmt.comptimePrint("lhu s1, {}(a0)", .{@offsetOf(Context, "instructions_remaining")}));
     inline for (0..16) |vx| {
         const host = comptime Compiler(.riscv64).hostRegFromV(@intCast(vx));
         asm volatile (std.fmt.comptimePrint(
                 "lbu {s}, {}(a0)",
-                .{ @tagName(host), vx + @offsetOf(chip8.Cpu.Context, "v") },
+                .{ @tagName(host), vx + @offsetOf(Context, "v") },
             ));
     }
 
@@ -197,10 +195,19 @@ pub fn Compiler(comptime isa: Isa) type {
         }
 
         pub fn prologue(self: *Self) !void {
-            try self.assembler.addi(.sp, .sp, -16);
-            try self.assembler.sd(.ra, 0, .sp);
-            try self.assembler.sd(.s0, 8, .sp);
-            try self.assembler.mv(.s0, .a0);
+            const a = &self.assembler;
+            try a.addi(.sp, .sp, -16);
+            try a.sd(.ra, 0, .sp);
+            try a.sd(.s0, 8, .sp);
+            try a.mv(.s0, .a0);
+
+            // clear all V registers
+            for (0..16) |vx| {
+                try a.li(hostRegFromV(@intCast(vx)), 0);
+            }
+
+            // clear I
+            try a.addi(i_reg, ctx_reg, @offsetOf(Context, "memory"));
         }
 
         fn callHost(self: *Self, function: HostFunction) !void {
@@ -220,23 +227,54 @@ pub fn Compiler(comptime isa: Isa) type {
         const i_reg = riscv64.Register.a1;
 
         pub fn compile(self: *Self, instruction: chip8.Instruction) !void {
-            const decoded = instruction.decode();
+            const a = &self.assembler;
             try self.callHost(.check_remaining);
-            switch (decoded) {
+            switch (instruction.decode()) {
                 .set_register => |ins| {
                     const vx, const nn = ins;
-                    try self.assembler.li(hostRegFromV(vx), nn);
+                    try a.li(hostRegFromV(vx), nn);
                 },
                 .add_immediate => |ins| {
                     const vx, const nn = ins;
-                    try self.assembler.addi(hostRegFromV(vx), hostRegFromV(vx), nn);
+                    try a.addi(hostRegFromV(vx), hostRegFromV(vx), nn);
                     // TODO: andi vx, vx, 0xff
                 },
                 .set_register_to_register => |ins| {
                     const vx, const vy = ins;
-                    try self.assembler.mv(hostRegFromV(vx), hostRegFromV(vy));
+                    try a.mv(hostRegFromV(vx), hostRegFromV(vy));
                 },
-                .invalid => try self.assembler.ebreak(),
+                .set_i => |i_val| {
+                    const offset_from_ctx: u16 = i_val + @as(u16, @intCast(@offsetOf(Context, "memory")));
+                    if (std.math.cast(i12, offset_from_ctx)) |small_imm| {
+                        try a.addi(i_reg, ctx_reg, small_imm);
+                    } else {
+                        try a.li(.t0, offset_from_ctx);
+                        try a.add(i_reg, ctx_reg, .t0);
+                    }
+                },
+                .store => |up_to| {
+                    // TODO wrap I around
+                    const reg_count = @as(u8, up_to) + 1;
+                    for (0..reg_count) |vx_usize| {
+                        const vx: u4 = @intCast(vx_usize);
+                        try a.sb(hostRegFromV(vx), vx, i_reg);
+                    }
+                    try a.addi(i_reg, i_reg, reg_count);
+                },
+                .load => |up_to| {
+                    // TODO wrap I around
+                    const reg_count = @as(u8, up_to) + 1;
+                    for (0..reg_count) |vx_usize| {
+                        const vx: u4 = @intCast(vx_usize);
+                        try a.lbu(hostRegFromV(vx), vx, i_reg);
+                    }
+                    try a.addi(i_reg, i_reg, reg_count);
+                },
+
+                .invalid => |opcode| {
+                    try a.li(.t0, @intFromEnum(opcode));
+                    try a.ebreak();
+                },
 
                 .clear,
                 .ret,
@@ -254,7 +292,6 @@ pub fn Compiler(comptime isa: Isa) type {
                 .sub_registers_reverse,
                 .shift_left,
                 .skip_if_registers_not_equal,
-                .set_i,
                 .jump_v0,
                 .random,
                 .draw,
@@ -267,16 +304,10 @@ pub fn Compiler(comptime isa: Isa) type {
                 .increment_i,
                 .set_i_to_font,
                 .store_bcd,
-                .store,
-                .load,
                 => {
-                    std.log.scoped(.compiler).warn("unimplemented chip-8 instruction: {x:0>4} ({s})", .{ @intFromEnum(instruction), @tagName(decoded) });
+                    std.log.scoped(.compiler).warn("unimplemented chip-8 instruction: {x:0>4} ({s})", .{ @intFromEnum(instruction), @tagName(instruction.decode()) });
                 },
             }
-        }
-
-        pub fn debug(self: *Self) !void {
-            try self.callHost(.debug_v0_and_v1);
         }
 
         pub fn epilogue(self: *Self) !void {

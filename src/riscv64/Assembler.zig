@@ -198,7 +198,7 @@ pub fn slli(self: *Assembler, rd: Register, rs1: Register, shamt: u6) !void {
     } });
 }
 
-fn li32(self: *Assembler, rd: Register, value: i32) !void {
+pub fn li(self: *Assembler, rd: Register, value: i32) !void {
     if (std.math.cast(i12, value)) |lower_immediate| {
         return self.addi(rd, .zero, lower_immediate);
     } else {
@@ -223,6 +223,18 @@ fn li32(self: *Assembler, rd: Register, value: i32) !void {
     }
 }
 
+pub fn add(self: *Assembler, rd: Register, rs1: Register, rs2: Register) !void {
+    // TODO try c.add
+    try self.emit(Instruction{ .r = .{
+        .opcode = .op,
+        .funct3 = 0b000,
+        .rd = rd,
+        .rs1 = rs1,
+        .rs2 = rs2,
+        .funct7 = 0b0000000,
+    } });
+}
+
 fn c_li(self: *Assembler, rd: Register.NonZero, imm: i6) !void {
     assert(self.hasCompressed());
     const u_imm: u6 = @bitCast(imm);
@@ -233,30 +245,6 @@ fn c_li(self: *Assembler, rd: Register.NonZero, imm: i6) !void {
         .imm_2 = @truncate(u_imm >> 5),
         .funct3 = 0b010,
     } });
-}
-
-pub fn li(self: *Assembler, rd: Register, value: i64) !void {
-    // TODO support more complex cases
-    if (std.math.cast(i32, value)) |word_immediate| {
-        return self.li32(rd, word_immediate);
-    } else if (std.math.cast(i44, value)) |word_and_shift| {
-        // TODO: while does not fit in u32, add 12 bits and shift
-        var upper: i32 = @truncate(word_and_shift >> 12);
-        const lower: i12 = @truncate(word_and_shift);
-
-        if (lower < 0 and upper == std.math.maxInt(i32)) {
-            // load 0x80000000 (2^31) without sign extension
-            try self.addi(rd, .zero, 1);
-            try self.slli(rd, rd, 31);
-        } else {
-            if (lower < 0) {
-                upper += 1;
-            }
-            try self.li32(rd, upper);
-        }
-        try self.slli(rd, rd, 12);
-        try self.addi(rd, rd, lower);
-    } else std.debug.panic("{} too big", .{value});
 }
 
 fn c_jr(self: *Assembler, rs1: Register.NonZero) !void {
@@ -334,6 +322,10 @@ fn load(self: *Assembler, size: riscv64.LoadStoreSize, dst: Register, offset: i1
 }
 
 fn store(self: *Assembler, size: riscv64.LoadStoreSize, src: Register, offset: i12, base: Register) !void {
+    // unsigned stores do not exist
+    assert(size != .byte_unsigned);
+    assert(size != .halfword_unsigned);
+    assert(size != .word_unsigned);
     try self.emit(Instruction.makeS(
         .store,
         @intFromEnum(size),
@@ -343,57 +335,57 @@ fn store(self: *Assembler, size: riscv64.LoadStoreSize, src: Register, offset: i
     ));
 }
 
-fn c_lwsp(self: *Assembler, dst: Register.NonZero, offset: u8) !void {
-    assert(self.hasCompressed());
-    assert(offset % 4 == 0);
-
-    try self.emit(Instruction.Compressed{ .ci = .{
-        .op = 0b10,
-        .imm_1 = permute(offset, &.{ 6, 7, 2, 3, 4 }),
-        .rd_rs1 = Register.from(dst),
-        .imm_2 = @truncate(offset >> 5),
-        .funct3 = 0b010,
-    } });
-}
-
-fn c_ldsp(self: *Assembler, dst: Register.NonZero, offset: u9) !void {
-    assert(self.hasCompressed());
-    assert(offset % 8 == 0);
-
-    try self.emit(Instruction.Compressed{ .ci = .{
-        .op = 0b10,
-        .imm_1 = permute(offset, &.{ 6, 7, 8, 3, 4 }),
-        .rd_rs1 = Register.from(dst),
-        .imm_2 = @truncate(offset >> 5),
-        .funct3 = 0b011,
-    } });
-}
-
 pub fn ld(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
-    if (self.hasCompressed() and base == .sp and @rem(offset, 8) == 0) {
-        if (dst.nonZero()) |nz_dst| {
-            if (std.math.cast(u9, offset)) |uimm| {
-                return self.c_ldsp(nz_dst, uimm);
-            }
-        }
-    }
+    // TODO try c.ldsp, c.ld
     return self.load(.doubleword, dst, offset, base);
 }
 
 pub fn lw(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
-    if (self.hasCompressed() and base == .sp and @rem(offset, 4) == 0) {
-        if (dst.nonZero()) |nz_dst| {
-            if (std.math.cast(u8, offset)) |uimm| {
-                return self.c_lwsp(nz_dst, uimm);
-            }
-        }
-    }
+    // TODO try c.lwsp, c.lw
     return self.load(.word, dst, offset, base);
 }
 
+pub fn lwu(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+    return self.load(.word_unsigned, dst, offset, base);
+}
+
+pub fn lh(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+    // TODO try c.lh (Zcb)
+    return self.load(.halfword, dst, offset, base);
+}
+
+pub fn lhu(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+    // TODO try c.lhu (Zcb)
+    return self.load(.halfword_unsigned, dst, offset, base);
+}
+
+pub fn lb(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+    return self.load(.byte, dst, offset, base);
+}
+
+pub fn lbu(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+    // TODO try c.lbu (Zcb)
+    return self.load(.byte_unsigned, dst, offset, base);
+}
+
 pub fn sd(self: *Assembler, src: Register, offset: i12, base: Register) !void {
-    // TODO compress, support other sizes
+    // TODO try c.sdsp, c.sd
     return self.store(.doubleword, src, offset, base);
+}
+
+pub fn sw(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+    // TODO try c.swsp, c.sw
+    return self.store(.word, dst, offset, base);
+}
+
+pub fn sh(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+    // TODO try c.sh (Zcb)
+    return self.store(.halfword, dst, offset, base);
+}
+
+pub fn sb(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+    // TODO try c.sb (Zcb)
+    return self.store(.byte, dst, offset, base);
 }
 
 fn c_mv(self: *Assembler, dst: Register.NonZero, src: Register.NonZero) !void {
@@ -415,7 +407,7 @@ pub fn mv(self: *Assembler, dst: Register, src: Register) !void {
 test "load-immediates are executed correctly" {
     if (@import("builtin").cpu.arch != .riscv64) return error.SkipZigTest;
 
-    const immediates = [_]i64{
+    const immediates = [_]i32{
         0,
         1,
         -1,
@@ -431,12 +423,7 @@ test "load-immediates are executed correctly" {
         0x800,
         // i32 boundaries
         -0x80000000,
-        -0x80000001,
-        0x80000000,
         0x7fffffff,
-        // i44 boundaries
-        0x7ffffffffff,
-        -0x80000000000,
     };
 
     for (immediates) |i| {

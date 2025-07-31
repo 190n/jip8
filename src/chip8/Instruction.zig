@@ -75,50 +75,55 @@ pub const Instruction = enum(u16) {
         };
     }
 
-    pub const Formats = struct {
+    pub const formats = struct {
+        /// reg, reg
         pub const Xy = [2]u4;
+        /// reg, imm8
         pub const Xnn = struct { u4, u8 };
+        /// imm12
         pub const Nnn = u12;
+        /// reg, reg, imm4
         pub const Xyn = [3]u4;
+        /// reg
         pub const X = u4;
         pub const None = void;
     };
 
     pub const Decoded = union(enum) {
-        clear: Formats.None,
-        ret: Formats.None,
-        jump: Formats.Nnn,
-        call: Formats.Nnn,
-        skip_if_equal: Formats.Xnn,
-        skip_if_not_equal: Formats.Xnn,
-        skip_if_registers_equal: Formats.Xy,
-        set_register: Formats.Xnn,
-        add_immediate: Formats.Xnn,
-        set_register_to_register: Formats.Xy,
-        bitwise_or: Formats.Xy,
-        bitwise_and: Formats.Xy,
-        bitwise_xor: Formats.Xy,
-        add_registers: Formats.Xy,
-        sub_registers: Formats.Xy,
-        shift_right: Formats.Xy,
-        sub_registers_reverse: Formats.Xy,
-        shift_left: Formats.Xy,
-        skip_if_registers_not_equal: Formats.Xy,
-        set_i: Formats.Nnn,
-        jump_v0: Formats.Nnn,
-        random: Formats.Xnn,
-        draw: Formats.Xyn,
-        skip_if_pressed: Formats.X,
-        skip_if_not_pressed: Formats.X,
-        read_dt: Formats.X,
-        wait_for_key: Formats.X,
-        set_dt: Formats.X,
-        set_st: Formats.X,
-        increment_i: Formats.X,
-        set_i_to_font: Formats.X,
-        store_bcd: Formats.X,
-        store: Formats.X,
-        load: Formats.X,
+        clear: formats.None,
+        ret: formats.None,
+        jump: formats.Nnn,
+        call: formats.Nnn,
+        skip_if_equal: formats.Xnn,
+        skip_if_not_equal: formats.Xnn,
+        skip_if_registers_equal: formats.Xy,
+        set_register: formats.Xnn,
+        add_immediate: formats.Xnn,
+        set_register_to_register: formats.Xy,
+        bitwise_or: formats.Xy,
+        bitwise_and: formats.Xy,
+        bitwise_xor: formats.Xy,
+        add_registers: formats.Xy,
+        sub_registers: formats.Xy,
+        shift_right: formats.Xy,
+        sub_registers_reverse: formats.Xy,
+        shift_left: formats.Xy,
+        skip_if_registers_not_equal: formats.Xy,
+        set_i: formats.Nnn,
+        jump_v0: formats.Nnn,
+        random: formats.Xnn,
+        draw: formats.Xyn,
+        skip_if_pressed: formats.X,
+        skip_if_not_pressed: formats.X,
+        read_dt: formats.X,
+        wait_for_key: formats.X,
+        set_dt: formats.X,
+        set_st: formats.X,
+        increment_i: formats.X,
+        set_i_to_font: formats.X,
+        store_bcd: formats.X,
+        store: formats.X,
+        load: formats.X,
 
         /// Holds the complete opcode, for debugging
         invalid: Instruction,
