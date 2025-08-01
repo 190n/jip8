@@ -180,6 +180,16 @@ pub fn addiw(self: *Assembler, rd: Register, rs1: Register, value: i12) !void {
     } });
 }
 
+pub fn andi(self: *Assembler, rd: Register, rs1: Register, value: i12) !void {
+    try self.emit(Instruction{ .i = .{
+        .opcode = .op_imm,
+        .funct3 = 0b111,
+        .rd = rd,
+        .rs1 = rs1,
+        .imm = @bitCast(value),
+    } });
+}
+
 pub fn lui(self: *Assembler, rd: Register, value: u20) !void {
     try self.emit(Instruction{ .u = .{
         .opcode = .lui,

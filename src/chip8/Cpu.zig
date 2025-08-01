@@ -34,6 +34,7 @@ context: Context,
 guest_stack: []align(@alignOf(StackFrame)) u8,
 /// If non-null, reason that the CPU stopped executing code
 exit_reason: ?anyerror = null,
+random: std.Random.DefaultPrng,
 
 const stack_align = @alignOf(StackFrame);
 
@@ -61,6 +62,7 @@ pub fn init(guest_stack: []align(stack_align) u8, code: GuestFunction) Cpu {
             .memory = undefined,
         },
         .guest_stack = guest_stack,
+        .random = .init(@truncate(@as(u128, @bitCast(std.time.nanoTimestamp())))),
     };
     @memset(&cpu.context.v, 0);
     @memset(&cpu.context.memory, 0);

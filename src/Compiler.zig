@@ -14,8 +14,17 @@ pub const Isa = enum {
 const HostFunction = std.meta.DeclEnum(host_functions);
 
 const host_functions = struct {
-    pub const check_remaining: *align(@alignOf(fn () callconv(.c) void)) const anyopaque = &riscvCheckRemaining;
+    pub const check_remaining = &riscvCheckRemaining;
+    pub const random = &randomImpl;
 };
+
+fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: u8 } {
+    const cpu: *chip8.Cpu = @fieldParentPtr("context", context);
+    return .{
+        .a0 = context,
+        .a1 = cpu.random.random().int(u8),
+    };
+}
 
 fn riscvCheckRemaining() callconv(.naked) noreturn {
     // TODO:
@@ -198,8 +207,7 @@ pub fn Compiler(comptime isa: Isa) type {
             const a = &self.assembler;
             try a.addi(.sp, .sp, -16);
             try a.sd(.ra, 0, .sp);
-            try a.sd(.s0, 8, .sp);
-            try a.mv(.s0, .a0);
+            try a.lhu(.s1, @offsetOf(Context, "instructions_remaining"), .a0);
 
             // clear all V registers
             for (0..16) |vx| {
@@ -237,7 +245,7 @@ pub fn Compiler(comptime isa: Isa) type {
                 .add_immediate => |ins| {
                     const vx, const nn = ins;
                     try a.addi(hostRegFromV(vx), hostRegFromV(vx), nn);
-                    // TODO: andi vx, vx, 0xff
+                    try a.andi(hostRegFromV(vx), hostRegFromV(vx), 0xff);
                 },
                 .set_register_to_register => |ins| {
                     const vx, const vy = ins;
@@ -270,6 +278,21 @@ pub fn Compiler(comptime isa: Isa) type {
                     }
                     try a.addi(i_reg, i_reg, reg_count);
                 },
+                .random => |ins| {
+                    const dst_reg, const mask = ins;
+                    try a.addi(.sp, .sp, -16);
+                    try a.sd(.a1, 0, .sp);
+                    for ([_]riscv64.Register{ .a6, .a7, .t3, .t4, .t5, .t6 }, 0..) |reg, i| {
+                        try a.sb(reg, @intCast(8 + i), .sp);
+                    }
+                    try self.callHost(.random);
+                    for ([_]riscv64.Register{ .a6, .a7, .t3, .t4, .t5, .t6 }, 0..) |reg, i| {
+                        try a.lbu(reg, @intCast(8 + i), .sp);
+                    }
+                    try a.andi(hostRegFromV(dst_reg), .a1, mask);
+                    try a.ld(.a1, 0, .sp);
+                    try a.addi(.sp, .sp, 16);
+                },
 
                 .invalid => |opcode| {
                     try a.li(.t0, @intFromEnum(opcode));
@@ -293,7 +316,6 @@ pub fn Compiler(comptime isa: Isa) type {
                 .shift_left,
                 .skip_if_registers_not_equal,
                 .jump_v0,
-                .random,
                 .draw,
                 .skip_if_pressed,
                 .skip_if_not_pressed,
