@@ -185,6 +185,54 @@ pub fn Compiler(comptime isa: Isa) type {
             .riscv64 => riscv64.Assembler,
         };
 
+        const RegisterScope = struct {
+            compiler: *Self,
+            v_regs_saved: bool = false,
+            i_saved: bool = false,
+
+            pub fn init(compiler: *Self) RegisterScope {
+                return .{ .compiler = compiler };
+            }
+
+            pub fn saveVRegsForHostCall(self: *RegisterScope) !void {
+                self.v_regs_saved = true;
+                for (0..16) |vx| {
+                    const host = hostRegFromV(@intCast(vx));
+                    if (!host.isSaved()) {
+                        try self.compiler.assembler.sb(host, @intCast(vx + @offsetOf(Context, "v")), ctx_reg);
+                    }
+                }
+            }
+
+            pub fn saveIForHostCall(self: *RegisterScope) !void {
+                self.i_saved = true;
+                try self.compiler.assembler.sd(i_reg, @intCast(@offsetOf(Context, "i")), ctx_reg);
+            }
+
+            pub fn restoreV(self: *RegisterScope) !void {
+                if (self.v_regs_saved) {
+                    self.v_regs_saved = false;
+                    for (0..16) |vx| {
+                        const host = hostRegFromV(@intCast(vx));
+                        if (!host.isSaved()) {
+                            try self.compiler.assembler.lbu(host, @intCast(vx + @offsetOf(Context, "v")), ctx_reg);
+                        }
+                    }
+                }
+            }
+
+            pub fn restoreI(self: *RegisterScope) !void {
+                if (self.i_saved) {
+                    self.i_saved = false;
+                    try self.compiler.assembler.ld(i_reg, @intCast(@offsetOf(Context, "i")), ctx_reg);
+                }
+            }
+
+            pub fn isRestored(self: *const RegisterScope) bool {
+                return !self.v_regs_saved and !self.i_saved;
+            }
+        };
+
         pub fn init(self: *Self, allocator: std.mem.Allocator, feature_set: std.Target.Cpu.Feature.Set) !void {
             self.* = .{
                 .code_buffer = .{ .writable = .init(allocator) },
@@ -237,6 +285,8 @@ pub fn Compiler(comptime isa: Isa) type {
         pub fn compile(self: *Self, instruction: chip8.Instruction) !void {
             const a = &self.assembler;
             try self.callHost(.check_remaining);
+            var scope = RegisterScope.init(self);
+            defer std.debug.assert(scope.isRestored());
             switch (instruction.decode()) {
                 .set_register => |ins| {
                     const vx, const nn = ins;
@@ -280,18 +330,15 @@ pub fn Compiler(comptime isa: Isa) type {
                 },
                 .random => |ins| {
                     const dst_reg, const mask = ins;
-                    try a.addi(.sp, .sp, -16);
-                    try a.sd(.a1, 0, .sp);
-                    for ([_]riscv64.Register{ .a6, .a7, .t3, .t4, .t5, .t6 }, 0..) |reg, i| {
-                        try a.sb(reg, @intCast(8 + i), .sp);
-                    }
+                    try scope.saveVRegsForHostCall();
+                    try scope.saveIForHostCall();
                     try self.callHost(.random);
-                    for ([_]riscv64.Register{ .a6, .a7, .t3, .t4, .t5, .t6 }, 0..) |reg, i| {
-                        try a.lbu(reg, @intCast(8 + i), .sp);
-                    }
+                    try scope.restoreV();
+                    // this writes to the output V register but needs a1 to be the random result
+                    // instead of I. so it must overwrite the V registers that were saved across
+                    // the host call, but it must use a1 before it is restored to the value of I
                     try a.andi(hostRegFromV(dst_reg), .a1, mask);
-                    try a.ld(.a1, 0, .sp);
-                    try a.addi(.sp, .sp, 16);
+                    try scope.restoreI();
                 },
 
                 .invalid => |opcode| {
