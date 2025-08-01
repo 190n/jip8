@@ -282,13 +282,25 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             try a.mv(hostRegFromV(vx), hostRegFromV(vy));
         },
         .set_i => |i_val| {
-            const offset_from_ctx: u16 = i_val + @as(u16, @intCast(@offsetOf(Context, "memory")));
+            const offset_from_ctx = @as(u16, i_val) + @offsetOf(Context, "memory");
             if (std.math.cast(i12, offset_from_ctx)) |small_imm| {
                 try a.addi(i_reg, ctx_reg, small_imm);
             } else {
                 try a.li(.t0, offset_from_ctx);
                 try a.add(i_reg, ctx_reg, .t0);
             }
+        },
+        .random => |ins| {
+            const dst_reg, const mask = ins;
+            try scope.saveVRegsForHostCall();
+            try scope.saveIForHostCall();
+            try self.callHost(.random);
+            try scope.restoreV();
+            // this writes to the output V register but needs a1 to be the random result
+            // instead of I. so it must overwrite the V registers that were saved across
+            // the host call, but it must use a1 before it is restored to the value of I
+            try a.andi(hostRegFromV(dst_reg), .a1, mask);
+            try scope.restoreI();
         },
         .store => |up_to| {
             // TODO wrap I around
@@ -307,18 +319,6 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
                 try a.lbu(hostRegFromV(vx), vx, i_reg);
             }
             try a.addi(i_reg, i_reg, reg_count);
-        },
-        .random => |ins| {
-            const dst_reg, const mask = ins;
-            try scope.saveVRegsForHostCall();
-            try scope.saveIForHostCall();
-            try self.callHost(.random);
-            try scope.restoreV();
-            // this writes to the output V register but needs a1 to be the random result
-            // instead of I. so it must overwrite the V registers that were saved across
-            // the host call, but it must use a1 before it is restored to the value of I
-            try a.andi(hostRegFromV(dst_reg), .a1, mask);
-            try scope.restoreI();
         },
 
         .invalid => |opcode| {
