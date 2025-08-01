@@ -31,13 +31,8 @@ pub fn main() !void {
 
     try compiler.prologue();
     for ([_]u16{
-        // see if wraparound works
-        0x60ff,
-        0x7002,
-        // random
-        0xc0ff,
-        // nop so we see all the registers again
-        0x7000,
+        0xa800,
+        0xff55,
     }) |ins| {
         try compiler.compile(@enumFromInt(ins));
     }
@@ -50,7 +45,7 @@ pub fn main() !void {
         const log = std.log.scoped(.host);
 
         const retval = retval: while (true) {
-            cpu.run(100) catch |e| break :retval e;
+            cpu.run(1) catch |e| break :retval e;
             log.info("guest still running", .{});
         };
         log.info("child returned: {}", .{retval});

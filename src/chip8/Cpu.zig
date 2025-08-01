@@ -17,6 +17,10 @@ pub const Context = extern struct {
     instructions_remaining: u16 = 0,
     did_exit: bool = false,
     memory: [4096]u8,
+    canary: switch (builtin.mode) {
+        .Debug, .ReleaseSafe => enum(u64) { valid = 0x665f0c30b0317cf4, _ },
+        .ReleaseFast, .ReleaseSmall => enum(u0) { valid },
+    } = .valid,
 
     pub fn yield(self: *Context) callconv(.c) *Context {
         self.did_exit = false;
@@ -78,6 +82,7 @@ pub fn run(self: *Cpu, instructions: u16) anyerror!void {
     self.context.instructions_remaining = instructions;
     self.context.did_exit = true;
     const retval = coroutine.switchStacks(&self.context);
+    std.debug.assert(self.context.canary == .valid);
     if (self.context.did_exit) {
         const err = @errorFromInt(retval);
         self.exit_reason = err;

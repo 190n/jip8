@@ -319,6 +319,17 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
                 try a.lbu(hostRegFromV(vx), vx, i_reg);
             }
             try a.addi(i_reg, i_reg, reg_count);
+
+            // compute the max I without wraparound:
+            // if we load 2 registers, I can be at most FFD (load from [FFD] and [FFE], then leave set to [FFF])
+            // so maximum I is FFF minus reg_count
+            // add this value to the memory offset to get an offset from ctx
+            // this value never fits in a small immediate :(
+            //
+            // li t0, (offset + FFF minus reg_count)
+            // add t0, ctx, t0
+            // bgtu i, t0, slow_path (aka bltu t0, i, slow_path)
+            //
         },
 
         .invalid => |opcode| {
@@ -361,9 +372,9 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
 
 pub fn epilogue(self: *Compiler) !void {
     try self.assembler.ld(.ra, 0, .sp);
-    try self.assembler.ld(.s0, 8, .sp);
     try self.assembler.addi(.sp, .sp, 16);
     try self.assembler.li(.a0, @intFromError(error.HelloRiscv64));
+    try self.assembler.ebreak();
     try self.assembler.ret();
 }
 

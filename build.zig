@@ -10,6 +10,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = false,
         }),
         // https://github.com/ziglang/zig/issues/24621
         .use_llvm = true,
