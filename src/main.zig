@@ -6,7 +6,7 @@ const Cpu = @import("./chip8.zig").Cpu;
 const x86_64 = @import("./x86_64.zig");
 const riscv64 = @import("./riscv64.zig");
 
-const Compiler = @import("./Compiler.zig").Compiler;
+const Compiler = @import("./riscv64.zig").Compiler;
 
 fn meow(x: u32) callconv(.c) void {
     std.log.info("meow: \"{s}\"", .{std.mem.asBytes(&x)});
@@ -20,7 +20,7 @@ pub fn main() !void {
     );
     defer std.heap.page_allocator.free(stack);
 
-    var compiler: Compiler(.riscv64) = undefined;
+    var compiler: Compiler = undefined;
     try compiler.init(std.heap.page_allocator, if (builtin.cpu.arch.isRISCV())
         builtin.cpu.features
     else
