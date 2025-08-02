@@ -175,9 +175,20 @@ const RegisterScope = struct {
     compiler: *Compiler,
     v_regs_saved: bool = false,
     i_saved: bool = false,
+    temp_regs_used: u8 = 0,
 
     pub fn init(compiler: *Compiler) RegisterScope {
         return .{ .compiler = compiler };
+    }
+
+    pub fn tempReg(self: *RegisterScope) riscv64.Register {
+        defer self.temp_regs_used += 1;
+        return switch (self.temp_regs_used) {
+            0 => .t0,
+            1 => .t1,
+            2 => .t2,
+            else => unreachable, // handle this by spilling something to the stack
+        };
     }
 
     pub fn saveVRegsForHostCall(self: *RegisterScope) !void {
@@ -286,8 +297,9 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             if (std.math.cast(i12, offset_from_ctx)) |small_imm| {
                 try a.addi(i_reg, ctx_reg, small_imm);
             } else {
-                try a.li(.t0, offset_from_ctx);
-                try a.add(i_reg, ctx_reg, .t0);
+                const tmp = scope.tempReg();
+                try a.li(tmp, offset_from_ctx);
+                try a.add(i_reg, ctx_reg, tmp);
             }
         },
         .random => |ins| {
