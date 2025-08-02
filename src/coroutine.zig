@@ -2,18 +2,21 @@ const Context = @import("./chip8.zig").Cpu.Context;
 const builtin = @import("builtin");
 
 const x86_64 = @import("./x86_64/switch.zig");
-const riscv64 = @import("./riscv64/switch.zig");
+const riscv = @import("./riscv/switch.zig");
 
-pub const switchStacks = switch (builtin.cpu.arch) {
-    .x86_64 => x86_64.switchStacks,
-    .riscv64 => riscv64.switchStacks,
-    else => unimplementedSwitchStacks,
+const impl = switch (builtin.cpu.arch) {
+    .x86_64 => x86_64,
+    .riscv32, .riscv64 => riscv,
+    else => struct {
+        pub const switchStacks = &unimplementedSwitchStacks;
+        pub const runReturnHere = &unimplementedRunReturnHere;
+        pub const StackFrame = extern struct {};
+    },
 };
-pub const runReturnHere = switch (builtin.cpu.arch) {
-    .x86_64 => x86_64.runReturnHere,
-    .riscv64 => riscv64.runReturnHere,
-    else => unimplementedRunReturnHere,
-};
+
+pub const switchStacks = impl.switchStacks;
+pub const runReturnHere = impl.runReturnHere;
+pub const StackFrame = impl.StackFrame;
 
 fn unimplementedSwitchStacks(_: *Context) callconv(.c) u16 {
     @panic("unimplemented");
@@ -22,9 +25,3 @@ fn unimplementedSwitchStacks(_: *Context) callconv(.c) u16 {
 fn unimplementedRunReturnHere() callconv(.c) void {
     @panic("unimplemented");
 }
-
-pub const StackFrame = switch (builtin.cpu.arch) {
-    .x86_64 => @import("./x86_64/switch.zig").StackFrame,
-    .riscv64 => @import("./riscv64/switch.zig").StackFrame,
-    else => extern struct {},
-};

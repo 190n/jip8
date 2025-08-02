@@ -1,7 +1,7 @@
 const std = @import("std");
 
-pub const Assembler = @import("./riscv64/Assembler.zig");
-pub const Compiler = @import("./riscv64/Compiler.zig");
+pub const Assembler = @import("./riscv/Assembler.zig");
+pub const Compiler = @import("./riscv/Compiler.zig");
 
 pub const Register = enum(u5) {
     zero = 0,
@@ -295,4 +295,16 @@ pub const AnyInstruction = union(enum) {
             .rvc => |i| try writer.writeInt(u16, @bitCast(i), .little),
         }
     }
+};
+
+pub const FloatWidth = enum {
+    /// F extension, 32 bits
+    f,
+    /// D extension, 64 bits
+    d,
+};
+
+pub const Bits = enum(u1) {
+    @"32",
+    @"64",
 };

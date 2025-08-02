@@ -6,19 +6,18 @@ const mem = std.mem;
 const Cpu = @import("../chip8.zig").Cpu;
 const Context = Cpu.Context;
 const GuestFunction = Cpu.GuestFunction;
+const riscv = @import("../riscv.zig");
 
-const FloatWidth = enum { double, single };
-
-const float_width: ?FloatWidth = if (std.Target.riscv.featureSetHas(builtin.cpu.features, .d))
-    .double
+const float_width: ?riscv.FloatWidth = if (std.Target.riscv.featureSetHas(builtin.cpu.features, .d))
+    .d
 else if (std.Target.riscv.featureSetHas(builtin.cpu.features, .f))
-    .single
+    .f
 else
     null;
 
 const float_data_type: u8 = if (float_width) |w| switch (w) {
-    .single => 'w',
-    .double => 'd',
+    .f => 'w',
+    .d => 'd',
 } else 0;
 
 const saved_int_registers = blk: {
@@ -41,27 +40,45 @@ const saved_float_registers = blk: {
 pub const switchStacks: *const fn (*Context) callconv(.c) u16 = @ptrCast(&switchStacksImpl);
 pub const runReturnHere: *const fn () callconv(.c) void = @ptrCast(&runReturnHereImpl);
 
+const load: []const u8 = switch (builtin.cpu.arch) {
+    .riscv32 => "lw",
+    .riscv64 => "ld",
+    else => unreachable,
+};
+
+const store: []const u8 = switch (builtin.cpu.arch) {
+    .riscv32 => "sw",
+    .riscv64 => "sd",
+    else => unreachable,
+};
+
+const register_size_bytes: usize = switch (builtin.cpu.arch) {
+    .riscv32 => 4,
+    .riscv64 => 8,
+    else => unreachable,
+};
+
 /// Code shared by switchStacks and runReturnHere
 inline fn switchAndRestore() void {
     // swap stack pointers
     asm volatile (print(
             // load new stack pointer out of context
-            \\ld a1, {0}(a0)
+            \\{[load]s} a1, {[offset]}(a0)
             // store current stack pointer in context
-            \\sd sp, {0}(a0)
+            \\{[store]s} sp, {[offset]}(a0)
             // replace stack pointer with new one
             \\mv sp, a1
             \\
-        , .{@offsetOf(Context, "stack_pointer")}));
+        , .{ .offset = @offsetOf(Context, "stack_pointer"), .load = load, .store = store }));
 
     // restore all registers
     comptime var offset: usize = 0;
     inline for (saved_int_registers) |register| {
         asm volatile (print(
-                "ld {s}, {}(sp)",
-                .{ register, offset },
+                "{s} {s}, {}(sp)",
+                .{ load, register, offset },
             ));
-        offset += 8;
+        offset += register_size_bytes;
     }
 
     if (float_width != null) {
@@ -70,17 +87,18 @@ inline fn switchAndRestore() void {
                     "fl{c} {s}, {}(sp)",
                     .{ float_data_type, register, offset },
                 ));
-            offset += 8;
+            offset += register_size_bytes;
         }
     }
 
     asm volatile (print(
             // load the place we are going to return to
-            \\ld a2, {}(sp)
+            \\{s} a2, {}(sp)
             // free the stack space we just restored from
             \\addi sp, sp, {}
         ,
             .{
+                load,
                 @offsetOf(StackFrame, "return_address"),
                 @offsetOf(StackFrame, "saved_context_pointer"),
             },
@@ -98,10 +116,10 @@ fn switchStacksImpl() callconv(.naked) void {
     comptime var offset: usize = 0;
     inline for (saved_int_registers) |register| {
         asm volatile (print(
-                "sd {s}, {}(sp)",
-                .{ register, offset },
+                "{s} {s}, {}(sp)",
+                .{ store, register, offset },
             ));
-        offset += 8;
+        offset += register_size_bytes;
     }
 
     if (float_width != null) {
@@ -110,7 +128,7 @@ fn switchStacksImpl() callconv(.naked) void {
                     "fs{c} {s}, {}(sp)",
                     .{ float_data_type, register, offset },
                 ));
-            // yes we waste some space if you have RV64F
+            // yes we waste some space if you have only 32-bit floats
             offset += 8;
         }
     }
@@ -119,8 +137,8 @@ fn switchStacksImpl() callconv(.naked) void {
     // return to right now (the place where yield() was called) from the content of the ra register
     // in the child context (which always points to runReturnHere)
     asm volatile (print(
-            "sd ra, {}(sp)",
-            .{@offsetOf(StackFrame, "return_address")},
+            "{s} ra, {}(sp)",
+            .{ store, @offsetOf(StackFrame, "return_address") },
         ));
 
     switchAndRestore();
@@ -130,14 +148,16 @@ fn switchStacksImpl() callconv(.naked) void {
 }
 
 fn runReturnHereImpl() callconv(.naked) void {
-    asm volatile (
-    // preserve return value of child function
-        \\mv a3, a0
-        // retrieve context pointer from stack
-        // it is stored right at the stack pointer because it's what the stack pointer pointed to
-        // when we entered the child function
-        \\ld a0, 0(sp)
-    );
+    asm volatile (print(
+            // preserve return value of child function
+            \\mv a3, a0
+            // retrieve context pointer from stack
+            // it is stored right at the stack pointer because it's what the stack pointer pointed to
+            // when we entered the child function
+            \\ {s} a0, 0(sp)
+        ,
+            .{store},
+        ));
     switchAndRestore();
 
     asm volatile (
@@ -148,6 +168,7 @@ fn runReturnHereImpl() callconv(.naked) void {
 }
 
 pub const StackFrame = extern struct {
+    // TODO support RV32D (this array will need more space for float registers than int registers)
     saved_registers: [num_saved_regs]usize = undefined,
     return_address: GuestFunction,
     /// sp will be pointing here when we start running the child function, so this is the field

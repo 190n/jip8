@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const riscv64 = @import("../riscv64.zig");
+const riscv = @import("../riscv.zig");
 const chip8 = @import("../chip8.zig");
 const Context = chip8.Cpu.Context;
 const code_buffer = @import("../code_buffer.zig");
@@ -8,7 +8,7 @@ const code_buffer = @import("../code_buffer.zig");
 const HostFunction = std.meta.DeclEnum(host_functions);
 
 code: code_buffer.Any,
-assembler: riscv64.Assembler,
+assembler: riscv.Assembler,
 trampolines: *const HostFunctionTrampolines,
 
 const host_functions = struct {
@@ -25,20 +25,33 @@ fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: 
 }
 
 fn riscvCheckRemaining() callconv(.naked) void {
+    const store_instruction: []const u8 = comptime switch (@import("builtin").cpu.arch) {
+        .riscv32 => "sw",
+        .riscv64 => "sd",
+        else => "",
+    };
+    const load_instruction: []const u8 = comptime switch (@import("builtin").cpu.arch) {
+        .riscv32 => "sw",
+        .riscv64 => "sd",
+        else => "",
+    };
+
     // TODO:
     // assemble this code into the JIT region, and use hostCall to call yield
     // so that the fast path is a jump nearby and only the uncommon case of
     // actually yielding has to read the address and indirect call
-    asm volatile (
-        \\beqz s1, yield
-        \\addi s1, s1, -1
-        \\ret
-        \\yield:
-        \\addi sp, sp, -16
-        \\sd ra, 0(sp)
-    );
+    asm volatile (std.fmt.comptimePrint(
+            \\beqz s1, yield
+            \\addi s1, s1, -1
+            \\ret
+            \\yield:
+            \\addi sp, sp, -16
+            \\{s} ra, 0(sp)
+        ,
+            .{store_instruction},
+        ));
 
-    asm volatile (std.fmt.comptimePrint("sd a1, {}(a0)", .{@offsetOf(Context, "i")}));
+    asm volatile (std.fmt.comptimePrint("{s} a1, {}(a0)", .{ store_instruction, @offsetOf(Context, "i") }));
     inline for (0..16) |vx| {
         const host = comptime hostRegFromV(@intCast(vx));
         asm volatile (std.fmt.comptimePrint(
@@ -52,7 +65,7 @@ fn riscvCheckRemaining() callconv(.naked) void {
         : [yield] "X" (&Context.yield),
     );
 
-    asm volatile (std.fmt.comptimePrint("ld a1, {}(a0)", .{@offsetOf(Context, "i")}));
+    asm volatile (std.fmt.comptimePrint("{s} a1, {}(a0)", .{ load_instruction, @offsetOf(Context, "i") }));
     asm volatile (std.fmt.comptimePrint("lhu s1, {}(a0)", .{@offsetOf(Context, "instructions_remaining")}));
     inline for (0..16) |vx| {
         const host = comptime hostRegFromV(@intCast(vx));
@@ -62,11 +75,13 @@ fn riscvCheckRemaining() callconv(.naked) void {
             ));
     }
 
-    asm volatile (
-        \\ld ra, 0(sp)
-        \\addi sp, sp, 16
-        \\ret
-    );
+    asm volatile (std.fmt.comptimePrint(
+            \\{s} ra, 0(sp)
+            \\addi sp, sp, 16
+            \\ret
+        ,
+            .{load_instruction},
+        ));
 }
 
 const HostFunctionTrampolines = struct {
@@ -117,7 +132,7 @@ const HostFunctionTrampolines = struct {
 fn makeRiscv64Trampolines(comptime compressed: bool) !HostFunctionTrampolines {
     var code: [4096]u8 = undefined;
     var writer: std.io.Writer = .fixed(&code);
-    var assembler = riscv64.Assembler.init(
+    var assembler = riscv.Assembler.init(
         &writer,
         std.Target.riscv.featureSet(if (compressed)
             &.{ .@"64bit", .i, .c }
@@ -181,7 +196,7 @@ const RegisterScope = struct {
         return .{ .compiler = compiler };
     }
 
-    pub fn tempReg(self: *RegisterScope) riscv64.Register {
+    pub fn tempReg(self: *RegisterScope) riscv.Register {
         defer self.temp_regs_used += 1;
         return switch (self.temp_regs_used) {
             0 => .t0,
@@ -266,12 +281,12 @@ fn callHost(self: *Compiler, function: HostFunction) !void {
     return self.assembler.jal(.ra, @intCast(trampoline_code_offset - caller_offset));
 }
 
-fn hostRegFromV(guest_register: u4) riscv64.Register {
+fn hostRegFromV(guest_register: u4) riscv.Register {
     return @enumFromInt(@as(u5, guest_register) + 16);
 }
 
-const ctx_reg = riscv64.Register.a0;
-const i_reg = riscv64.Register.a1;
+const ctx_reg = riscv.Register.a0;
+const i_reg = riscv.Register.a1;
 
 pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
     const a = &self.assembler;

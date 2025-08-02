@@ -3,9 +3,9 @@ const builtin = @import("builtin");
 
 const Assembler = @This();
 
-const riscv64 = @import("../riscv64.zig");
-const Register = riscv64.Register;
-const Instruction = riscv64.Instruction;
+const riscv = @import("../riscv.zig");
+const Register = riscv.Register;
+const Instruction = riscv.Instruction;
 
 const code_buffer = @import("../code_buffer.zig");
 
@@ -15,15 +15,20 @@ const assert = std.debug.assert;
 pub const Features = packed struct {
     /// C (compressed instruction) extension, minus floating-point loads and stores
     zca: bool,
+    bits: riscv.Bits,
 
     pub fn from(set: std.Target.Cpu.Feature.Set) Features {
         return .{
             .zca = std.Target.riscv.featureSetHasAny(set, [_]std.Target.riscv.Feature{ .c, .zca }),
+            .bits = if (std.Target.riscv.featureSetHas(set, .@"64bit"))
+                .@"64"
+            else
+                .@"32",
         };
     }
 };
 
-/// TODO: delete
+/// TODO: delete?
 writer: *std.io.Writer,
 features: Features,
 
@@ -122,6 +127,7 @@ fn c_addi(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
 /// rd += nzimm, truncated to 32 bits, then sign-extended to 64
 fn c_addiw(self: *Assembler, rd: Register.NonZero, nzimm: i6) !void {
     assert(self.hasCompressed());
+    assert(self.features.bits == .@"64");
     assert(nzimm != 0);
     const u_nzimm: u6 = @bitCast(nzimm);
     try self.emit(Instruction.Compressed{ .ci = .{
@@ -171,6 +177,7 @@ pub fn addi(self: *Assembler, rd: Register, rs1: Register, value: i12) !void {
 }
 
 pub fn addiw(self: *Assembler, rd: Register, rs1: Register, value: i12) !void {
+    assert(self.features.bits == .@"64");
     try self.emit(Instruction{ .i = .{
         .opcode = .op_imm_32,
         .funct3 = 0b000,
@@ -221,14 +228,21 @@ pub fn li(self: *Assembler, rd: Register, value: i32) !void {
         }
         try self.lui(rd, upper);
         if (lower != 0) {
-            // we need addiw here, not addi
-            // if upper was 0x7ffff but we incremented it to account for a negative lower, then
-            // upper is 0x80000 but it got sign-extended into bits 63:32. this means our overall
-            // result will be negative even though value was positive.
-            // addiw solves this, because it will truncate the result (0x7ffff | lower) to 32 bits
-            // before sign-extending back to 64. the truncated result does not have bit 31 set so it
-            // is positive.
-            try self.addiw(rd, rd, lower);
+            switch (self.features.bits) {
+                .@"32" => {
+                    try self.addi(rd, rd, lower);
+                },
+                .@"64" => {
+                    // we need addiw here, not addi
+                    // if upper was 0x7ffff but we incremented it to account for a negative lower, then
+                    // upper is 0x80000 but it got sign-extended into bits 63:32. this means our overall
+                    // result will be negative even though value was positive.
+                    // addiw solves this, because it will truncate the result (0x7ffff | lower) to 32 bits
+                    // before sign-extending back to 64. the truncated result does not have bit 31 set so it
+                    // is positive.
+                    try self.addiw(rd, rd, lower);
+                },
+            }
         }
     }
 }
@@ -321,7 +335,11 @@ pub fn ret(self: *Assembler) !void {
     try self.jr(.ra, 0);
 }
 
-fn load(self: *Assembler, size: riscv64.LoadStoreSize, dst: Register, offset: i12, base: Register) !void {
+fn load(self: *Assembler, size: riscv.LoadStoreSize, dst: Register, offset: i12, base: Register) !void {
+    if (self.features.bits == .@"32") {
+        assert(size != .word_unsigned);
+        assert(size != .doubleword);
+    }
     try self.emit(Instruction{ .i = .{
         .opcode = .load,
         .funct3 = @intFromEnum(size),
@@ -331,11 +349,14 @@ fn load(self: *Assembler, size: riscv64.LoadStoreSize, dst: Register, offset: i1
     } });
 }
 
-fn store(self: *Assembler, size: riscv64.LoadStoreSize, src: Register, offset: i12, base: Register) !void {
+fn store(self: *Assembler, size: riscv.LoadStoreSize, src: Register, offset: i12, base: Register) !void {
     // unsigned stores do not exist
     assert(size != .byte_unsigned);
     assert(size != .halfword_unsigned);
     assert(size != .word_unsigned);
+    if (self.features.bits == .@"32") {
+        assert(size != .doubleword);
+    }
     try self.emit(Instruction.makeS(
         .store,
         @intFromEnum(size),

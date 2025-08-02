@@ -4,9 +4,9 @@ const builtin = @import("builtin");
 const Cpu = @import("./chip8.zig").Cpu;
 
 const x86_64 = @import("./x86_64.zig");
-const riscv64 = @import("./riscv64.zig");
+const riscv = @import("./riscv.zig");
 
-const Compiler = @import("./riscv64.zig").Compiler;
+const Compiler = riscv.Compiler;
 
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
@@ -41,7 +41,7 @@ pub fn main() !void {
     }
     try compiler.epilogue();
 
-    if (comptime builtin.cpu.arch == .riscv64) {
+    if (comptime builtin.cpu.arch.isRISCV()) {
         try compiler.makeExecutable();
         const seed: u64 = s: {
             const time_unsigned: u128 = @bitCast(std.time.nanoTimestamp());
@@ -68,5 +68,5 @@ pub const std_options = std.Options{
 
 test {
     _ = x86_64.Assembler;
-    _ = riscv64.Assembler;
+    _ = riscv.Assembler;
 }
