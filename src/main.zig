@@ -8,20 +8,23 @@ const riscv64 = @import("./riscv64.zig");
 
 const Compiler = @import("./riscv64.zig").Compiler;
 
-fn meow(x: u32) callconv(.c) void {
-    std.log.info("meow: \"{s}\"", .{std.mem.asBytes(&x)});
-}
+var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
 pub fn main() !void {
-    const stack = try std.heap.page_allocator.alignedAlloc(
+    const allocator = switch (builtin.mode) {
+        .Debug => debug_allocator.allocator(),
+        else => std.heap.smp_allocator,
+    };
+    defer if (builtin.mode == .Debug) std.debug.assert(debug_allocator.deinit() == .ok);
+    const stack = try allocator.alignedAlloc(
         u8,
         .fromByteUnits(std.heap.page_size_min),
         16 << 10,
     );
-    defer std.heap.page_allocator.free(stack);
+    defer allocator.free(stack);
 
     var compiler: Compiler = undefined;
-    try compiler.init(std.heap.page_allocator, if (builtin.cpu.arch.isRISCV())
+    try compiler.init(allocator, if (builtin.cpu.arch.isRISCV())
         builtin.cpu.features
     else
         std.Target.riscv.featureSet(&.{ .@"64bit", .c }));
@@ -31,8 +34,8 @@ pub fn main() !void {
 
     try compiler.prologue();
     for ([_]u16{
-        0xa800,
-        0xff55,
+        // 0xa800,
+        // 0xff55,
     }) |ins| {
         try compiler.compile(@enumFromInt(ins));
     }

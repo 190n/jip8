@@ -374,7 +374,6 @@ pub fn epilogue(self: *Compiler) !void {
     try self.assembler.ld(.ra, 0, .sp);
     try self.assembler.addi(.sp, .sp, 16);
     try self.assembler.li(.a0, @intFromError(error.HelloRiscv64));
-    try self.assembler.ebreak();
     try self.assembler.ret();
 }
 
