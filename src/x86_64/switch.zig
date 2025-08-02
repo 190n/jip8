@@ -13,7 +13,7 @@ const saved_registers = switch (@import("builtin").target.os.tag) {
 pub const switchStacks: *const fn (*Context) callconv(.c) u16 = @ptrCast(&switchStacksImpl);
 pub const runReturnHere: *const fn () callconv(.c) void = @ptrCast(&runReturnHereImpl);
 
-fn switchStacksImpl() callconv(.naked) noreturn {
+fn switchStacksImpl() callconv(.naked) void {
     inline for (saved_registers) |register| {
         asm volatile ("pushq %%" ++ register);
     }
@@ -34,7 +34,7 @@ inline fn finalRestore() void {
     asm volatile ("ret");
 }
 
-fn runReturnHereImpl() callconv(.naked) noreturn {
+fn runReturnHereImpl() callconv(.naked) void {
     // when the async function finally returns, instead of yielding, it will return here
     // the stack pointer will be 16 bytes below the top of the stack, pointing to a copy of
     // the context pointer that was saved by run(). we restore that context pointer so that

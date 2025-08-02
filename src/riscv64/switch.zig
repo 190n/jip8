@@ -87,7 +87,7 @@ inline fn switchAndRestore() void {
         ));
 }
 
-fn switchStacksImpl() callconv(.naked) noreturn {
+fn switchStacksImpl() callconv(.naked) void {
     // allocate enough stack space for everything we're going to push
     asm volatile (print(
             "addi sp, sp, {}",
@@ -129,7 +129,7 @@ fn switchStacksImpl() callconv(.naked) noreturn {
     asm volatile ("jr a2");
 }
 
-fn runReturnHereImpl() callconv(.naked) noreturn {
+fn runReturnHereImpl() callconv(.naked) void {
     asm volatile (
     // preserve return value of child function
         \\mv a3, a0

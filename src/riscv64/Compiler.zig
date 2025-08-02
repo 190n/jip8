@@ -24,7 +24,7 @@ fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: 
     };
 }
 
-fn riscvCheckRemaining() callconv(.naked) noreturn {
+fn riscvCheckRemaining() callconv(.naked) void {
     // TODO:
     // assemble this code into the JIT region, and use hostCall to call yield
     // so that the fast path is a jump nearby and only the uncommon case of
