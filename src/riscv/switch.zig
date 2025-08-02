@@ -156,7 +156,7 @@ fn runReturnHereImpl() callconv(.naked) void {
             // when we entered the child function
             \\ {s} a0, 0(sp)
         ,
-            .{store},
+            .{load},
         ));
     switchAndRestore();
 
