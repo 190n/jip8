@@ -57,7 +57,11 @@ fn frameLocation(self: *const Cpu) *StackFrame {
     return frameLocationFromStack(self.guest_stack);
 }
 
-pub fn init(guest_stack: []align(stack_align) u8, code: GuestFunction) Cpu {
+pub fn init(
+    guest_stack: []align(stack_align) u8,
+    code: GuestFunction,
+    random_seed: u64,
+) Cpu {
     var cpu = Cpu{
         .context = .{
             .stack_pointer = frameLocationFromStack(guest_stack),
@@ -66,7 +70,7 @@ pub fn init(guest_stack: []align(stack_align) u8, code: GuestFunction) Cpu {
             .memory = undefined,
         },
         .guest_stack = guest_stack,
-        .random = .init(@truncate(@as(u128, @bitCast(std.time.nanoTimestamp())))),
+        .random = .init(random_seed),
     };
     @memset(&cpu.context.v, 0);
     @memset(&cpu.context.memory, 0);

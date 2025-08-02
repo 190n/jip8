@@ -43,8 +43,12 @@ pub fn main() !void {
 
     if (comptime builtin.cpu.arch == .riscv64) {
         try compiler.makeExecutable();
+        const seed: u64 = s: {
+            const time_unsigned: u128 = @bitCast(std.time.nanoTimestamp());
+            break :s @truncate(time_unsigned);
+        };
 
-        var cpu = Cpu.init(stack, compiler.entrypoint());
+        var cpu = Cpu.init(stack, compiler.entrypoint(), seed);
         const log = std.log.scoped(.host);
 
         const retval = retval: while (true) {
