@@ -13,27 +13,37 @@ trampolines: *const HostFunctionTrampolines,
 
 const host_functions = struct {
     pub const check_remaining = &riscvCheckRemaining;
-    pub const random = &randomImpl;
+    pub const random = switch (@import("builtin").cpu.arch) {
+        .riscv32 => &randomImpl32,
+        .riscv64 => &randomImpl,
+        else => unreachable,
+    };
 };
 
 fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: u8 } {
-    const cpu: *chip8.Cpu = @fieldParentPtr("context", context);
+    const cpu: *chip8.Cpu = @alignCast(@fieldParentPtr("context", context));
     return .{
         .a0 = context,
         .a1 = cpu.random.random().int(u8),
     };
 }
 
+// this would be the same as randomImpl if not for https://github.com/ziglang/zig/issues/24668
+fn randomImpl32(context: *Context) callconv(.c) u8 {
+    const cpu: *chip8.Cpu = @alignCast(@fieldParentPtr("context", context));
+    return cpu.random.random().int(u8);
+}
+
 fn riscvCheckRemaining() callconv(.naked) void {
     const store_instruction: []const u8 = comptime switch (@import("builtin").cpu.arch) {
         .riscv32 => "sw",
         .riscv64 => "sd",
-        else => "",
+        else => unreachable,
     };
     const load_instruction: []const u8 = comptime switch (@import("builtin").cpu.arch) {
-        .riscv32 => "sw",
-        .riscv64 => "sd",
-        else => "",
+        .riscv32 => "lw",
+        .riscv64 => "ld",
+        else => unreachable,
     };
 
     // TODO:
@@ -46,12 +56,15 @@ fn riscvCheckRemaining() callconv(.naked) void {
             \\ret
             \\yield:
             \\addi sp, sp, -16
-            \\{s} ra, 0(sp)
+            \\{[store]s} ra, 0(sp)
         ,
-            .{store_instruction},
+            .{ .store = store_instruction },
         ));
 
-    asm volatile (std.fmt.comptimePrint("{s} a1, {}(a0)", .{ store_instruction, @offsetOf(Context, "i") }));
+    asm volatile (std.fmt.comptimePrint(
+            "{[store]s} a1, {[offset]}(a0)",
+            .{ .store = store_instruction, .offset = @offsetOf(Context, "i") },
+        ));
     inline for (0..16) |vx| {
         const host = comptime hostRegFromV(@intCast(vx));
         asm volatile (std.fmt.comptimePrint(
@@ -65,22 +78,25 @@ fn riscvCheckRemaining() callconv(.naked) void {
         : [yield] "X" (&Context.yield),
     );
 
-    asm volatile (std.fmt.comptimePrint("{s} a1, {}(a0)", .{ load_instruction, @offsetOf(Context, "i") }));
+    asm volatile (std.fmt.comptimePrint(
+            "{[load]s} a1, {[offset]}(a0)",
+            .{ .load = load_instruction, .offset = @offsetOf(Context, "i") },
+        ));
     asm volatile (std.fmt.comptimePrint("lhu s1, {}(a0)", .{@offsetOf(Context, "instructions_remaining")}));
     inline for (0..16) |vx| {
-        const host = comptime hostRegFromV(@intCast(vx));
+        const host_reg = comptime hostRegFromV(@intCast(vx));
         asm volatile (std.fmt.comptimePrint(
                 "lbu {s}, {}(a0)",
-                .{ @tagName(host), vx + @offsetOf(Context, "v") },
+                .{ @tagName(host_reg), vx + @offsetOf(Context, "v") },
             ));
     }
 
     asm volatile (std.fmt.comptimePrint(
-            \\{s} ra, 0(sp)
+            \\{[load]s} ra, 0(sp)
             \\addi sp, sp, 16
             \\ret
         ,
-            .{load_instruction},
+            .{ .load = load_instruction },
         ));
 }
 
@@ -89,7 +105,7 @@ const HostFunctionTrampolines = struct {
     /// here using `pointer_offsets` before the code can be called.
     code_template: []const u8,
     /// Tells the size of each function pointer stored at the beginning of code_template
-    pointer_size: enum(u8) { @"32" = 32, @"64" = 64 },
+    pointer_size: riscv.Bits,
     /// Tells the position where the code for function calls starts
     first_code_offset: usize,
     /// Tells the size of each piece of code to call a function
@@ -129,22 +145,31 @@ const HostFunctionTrampolines = struct {
     }
 };
 
-fn makeRiscv64Trampolines(comptime compressed: bool) !HostFunctionTrampolines {
+fn makeRiscvTrampolines(
+    comptime bits: riscv.Bits,
+    comptime compressed: bool,
+) !HostFunctionTrampolines {
     var code: [4096]u8 = undefined;
     var writer: std.io.Writer = .fixed(&code);
     var assembler = riscv.Assembler.init(
         &writer,
-        std.Target.riscv.featureSet(if (compressed)
-            &.{ .@"64bit", .i, .c }
-        else
-            &.{ .@"64bit", .i }),
+        std.Target.riscv.featureSet(switch (bits) {
+            .@"32" => if (compressed)
+                &.{ .i, .c }
+            else
+                &.{.i},
+            .@"64" => if (compressed)
+                &.{ .@"64bit", .i, .c }
+            else
+                &.{ .@"64bit", .i },
+        }),
     );
 
     var pointer_offsets: std.EnumArray(HostFunction, isize) = undefined;
 
     for (@typeInfo(HostFunction).@"enum".fields) |field| {
         pointer_offsets.set(@enumFromInt(field.value), @intCast(writer.buffered().len));
-        try writer.splatByteAll(0, 8);
+        try writer.splatByteAll(0, bits.bytes());
     }
 
     const first_code_offset = writer.buffered().len;
@@ -166,7 +191,7 @@ fn makeRiscv64Trampolines(comptime compressed: bool) !HostFunctionTrampolines {
         // get current PC in t0
         try assembler.auipc(.t0, 0);
         // load the function pointer into t0 using an offset from the PC
-        try assembler.ld(.t0, @intCast(offset_to_function_pointer), .t0);
+        try assembler.load_register(.t0, @intCast(offset_to_function_pointer), .t0);
         // jump to the function
         try assembler.jr(.t0, 0);
     }
@@ -175,14 +200,16 @@ fn makeRiscv64Trampolines(comptime compressed: bool) !HostFunctionTrampolines {
 
     return .{
         .code_template = &constant_code,
-        .pointer_size = .@"64",
+        .pointer_size = bits,
         .first_code_offset = first_code_offset,
         .each_code_size = each_code_size.?,
     };
 }
 
-const riscv64_trampolines = makeRiscv64Trampolines(false) catch unreachable;
-const riscv64_c_trampolines = makeRiscv64Trampolines(true) catch unreachable;
+const riscv32_trampolines = makeRiscvTrampolines(.@"32", false) catch unreachable;
+const riscv32_c_trampolines = makeRiscvTrampolines(.@"32", true) catch unreachable;
+const riscv64_trampolines = makeRiscvTrampolines(.@"64", false) catch unreachable;
+const riscv64_c_trampolines = makeRiscvTrampolines(.@"64", true) catch unreachable;
 
 const Compiler = @This();
 
@@ -218,7 +245,7 @@ const RegisterScope = struct {
 
     pub fn saveIForHostCall(self: *RegisterScope) !void {
         self.i_saved = true;
-        try self.compiler.assembler.sd(i_reg, @intCast(@offsetOf(Context, "i")), ctx_reg);
+        try self.compiler.assembler.store_register(i_reg, @intCast(@offsetOf(Context, "i")), ctx_reg);
     }
 
     pub fn restoreV(self: *RegisterScope) !void {
@@ -236,7 +263,7 @@ const RegisterScope = struct {
     pub fn restoreI(self: *RegisterScope) !void {
         if (self.i_saved) {
             self.i_saved = false;
-            try self.compiler.assembler.ld(i_reg, @intCast(@offsetOf(Context, "i")), ctx_reg);
+            try self.compiler.assembler.load_register(i_reg, @intCast(@offsetOf(Context, "i")), ctx_reg);
         }
     }
 
@@ -252,10 +279,10 @@ pub fn init(self: *Compiler, allocator: std.mem.Allocator, feature_set: std.Targ
         .trampolines = undefined,
     };
     self.assembler = .init(&self.code.writable.interface, feature_set);
-    self.trampolines = if (self.assembler.hasCompressed())
-        &riscv64_c_trampolines
-    else
-        &riscv64_trampolines;
+    self.trampolines = switch (self.assembler.features.bits) {
+        .@"32" => if (self.assembler.hasCompressed()) &riscv32_c_trampolines else &riscv32_trampolines,
+        .@"64" => if (self.assembler.hasCompressed()) &riscv64_c_trampolines else &riscv64_trampolines,
+    };
     try self.code.writable.interface.writeAll(self.trampolines.code_template);
     self.trampolines.write(self.code.writable.list.items);
 }
@@ -263,7 +290,7 @@ pub fn init(self: *Compiler, allocator: std.mem.Allocator, feature_set: std.Targ
 pub fn prologue(self: *Compiler) !void {
     const a = &self.assembler;
     try a.addi(.sp, .sp, -16);
-    try a.sd(.ra, 0, .sp);
+    try a.store_register(.ra, 0, .sp);
     try a.lhu(.s1, @offsetOf(Context, "instructions_remaining"), .a0);
 
     // clear all V registers
@@ -321,12 +348,30 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             const dst_reg, const mask = ins;
             try scope.saveVRegsForHostCall();
             try scope.saveIForHostCall();
-            try self.callHost(.random);
-            try scope.restoreV();
-            // this writes to the output V register but needs a1 to be the random result
-            // instead of I. so it must overwrite the V registers that were saved across
-            // the host call, but it must use a1 before it is restored to the value of I
-            try a.andi(hostRegFromV(dst_reg), .a1, mask);
+            switch (self.assembler.features.bits) {
+                .@"32" => {
+                    // 32-bit random impl does not return the context pointer, only the number
+                    // so we need to save the context pointer somewhere
+                    // TODO can probably pick a callee-save
+                    try a.addi(.sp, .sp, -16);
+                    try a.sw(ctx_reg, 0, .sp);
+                    try self.callHost(.random);
+                    const tmp_return_value = scope.tempReg();
+                    try a.mv(tmp_return_value, .a0);
+                    try a.lw(ctx_reg, 0, .sp);
+                    try a.addi(.sp, .sp, 16);
+                    try scope.restoreV();
+                    try a.andi(hostRegFromV(dst_reg), tmp_return_value, mask);
+                },
+                .@"64" => {
+                    try self.callHost(.random);
+                    try scope.restoreV();
+                    // this writes to the output V register but needs a1 to be the random result
+                    // instead of I. so it must overwrite the V registers that were saved across
+                    // the host call, but it must use a1 before it is restored to the value of I
+                    try a.andi(hostRegFromV(dst_reg), .a1, mask);
+                },
+            }
             try scope.restoreI();
         },
         .store => |up_to| {
@@ -398,7 +443,7 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
 }
 
 pub fn epilogue(self: *Compiler) !void {
-    try self.assembler.ld(.ra, 0, .sp);
+    try self.assembler.load_register(.ra, 0, .sp);
     try self.assembler.addi(.sp, .sp, 16);
     try self.assembler.li(.a0, @intFromError(error.HelloRiscv64));
     try self.assembler.ret();

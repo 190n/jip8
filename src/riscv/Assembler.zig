@@ -419,6 +419,34 @@ pub fn sb(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
     return self.store(.byte, dst, offset, base);
 }
 
+/// lw for 32-bit
+/// ld for 64-bit
+pub fn load_register(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+    return self.load(
+        switch (self.features.bits) {
+            .@"32" => .word,
+            .@"64" => .doubleword,
+        },
+        dst,
+        offset,
+        base,
+    );
+}
+
+/// sw for 32-bit
+/// sd for 64-bit
+pub fn store_register(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+    return self.store(
+        switch (self.features.bits) {
+            .@"32" => .word,
+            .@"64" => .doubleword,
+        },
+        dst,
+        offset,
+        base,
+    );
+}
+
 fn c_mv(self: *Assembler, dst: Register.NonZero, src: Register.NonZero) !void {
     try self.emit(Instruction.Compressed{ .cr = .{
         .funct4 = 0b1000,

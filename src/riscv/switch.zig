@@ -15,6 +15,10 @@ else if (std.Target.riscv.featureSetHas(builtin.cpu.features, .f))
 else
     null;
 
+comptime {
+    if (float_width == .d and builtin.cpu.arch == .riscv32) @compileError("unsupported");
+}
+
 const float_data_type: u8 = if (float_width) |w| switch (w) {
     .f => 'w',
     .d => 'd',
@@ -75,8 +79,8 @@ inline fn switchAndRestore() void {
     comptime var offset: usize = 0;
     inline for (saved_int_registers) |register| {
         asm volatile (print(
-                "{s} {s}, {}(sp)",
-                .{ load, register, offset },
+                "{[load]s} {[register]s}, {[offset]}(sp)",
+                .{ .load = load, .register = register, .offset = offset },
             ));
         offset += register_size_bytes;
     }
@@ -93,14 +97,14 @@ inline fn switchAndRestore() void {
 
     asm volatile (print(
             // load the place we are going to return to
-            \\{s} a2, {}(sp)
+            \\{[load]s} a2, {[ret_offset]}(sp)
             // free the stack space we just restored from
-            \\addi sp, sp, {}
+            \\addi sp, sp, {[ctx_offset]}
         ,
             .{
-                load,
-                @offsetOf(StackFrame, "return_address"),
-                @offsetOf(StackFrame, "saved_context_pointer"),
+                .load = load,
+                .ret_offset = @offsetOf(StackFrame, "return_address"),
+                .ctx_offset = @offsetOf(StackFrame, "saved_context_pointer"),
             },
         ));
 }
@@ -116,8 +120,8 @@ fn switchStacksImpl() callconv(.naked) void {
     comptime var offset: usize = 0;
     inline for (saved_int_registers) |register| {
         asm volatile (print(
-                "{s} {s}, {}(sp)",
-                .{ store, register, offset },
+                "{[store]s} {[register]s}, {[offset]}(sp)",
+                .{ .store = store, .register = register, .offset = offset },
             ));
         offset += register_size_bytes;
     }
@@ -137,8 +141,8 @@ fn switchStacksImpl() callconv(.naked) void {
     // return to right now (the place where yield() was called) from the content of the ra register
     // in the child context (which always points to runReturnHere)
     asm volatile (print(
-            "{s} ra, {}(sp)",
-            .{ store, @offsetOf(StackFrame, "return_address") },
+            "{[store]s} ra, {[offset]}(sp)",
+            .{ .store = store, .offset = @offsetOf(StackFrame, "return_address") },
         ));
 
     switchAndRestore();
@@ -154,9 +158,9 @@ fn runReturnHereImpl() callconv(.naked) void {
             // retrieve context pointer from stack
             // it is stored right at the stack pointer because it's what the stack pointer pointed to
             // when we entered the child function
-            \\ {s} a0, 0(sp)
+            \\ {[load]s} a0, 0(sp)
         ,
-            .{load},
+            .{ .load = load },
         ));
     switchAndRestore();
 

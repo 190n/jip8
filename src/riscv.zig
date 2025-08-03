@@ -307,4 +307,15 @@ pub const FloatWidth = enum {
 pub const Bits = enum(u1) {
     @"32",
     @"64",
+
+    pub fn bits(self: Bits) u8 {
+        return switch (self) {
+            .@"32" => 32,
+            .@"64" => 64,
+        };
+    }
+
+    pub fn bytes(self: Bits) u8 {
+        return self.bits() / 8;
+    }
 };
