@@ -404,19 +404,19 @@ pub fn sd(self: *Assembler, src: Register, offset: i12, base: Register) !void {
     return self.store(.doubleword, src, offset, base);
 }
 
-pub fn sw(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+pub fn sw(self: *Assembler, src: Register, offset: i12, base: Register) !void {
     // TODO try c.swsp, c.sw
-    return self.store(.word, dst, offset, base);
+    return self.store(.word, src, offset, base);
 }
 
-pub fn sh(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+pub fn sh(self: *Assembler, src: Register, offset: i12, base: Register) !void {
     // TODO try c.sh (Zcb)
-    return self.store(.halfword, dst, offset, base);
+    return self.store(.halfword, src, offset, base);
 }
 
-pub fn sb(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+pub fn sb(self: *Assembler, src: Register, offset: i12, base: Register) !void {
     // TODO try c.sb (Zcb)
-    return self.store(.byte, dst, offset, base);
+    return self.store(.byte, src, offset, base);
 }
 
 /// lw for 32-bit
@@ -435,13 +435,13 @@ pub fn load_register(self: *Assembler, dst: Register, offset: i12, base: Registe
 
 /// sw for 32-bit
 /// sd for 64-bit
-pub fn store_register(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+pub fn store_register(self: *Assembler, src: Register, offset: i12, base: Register) !void {
     return self.store(
         switch (self.features.bits) {
             .@"32" => .word,
             .@"64" => .doubleword,
         },
-        dst,
+        src,
         offset,
         base,
     );
