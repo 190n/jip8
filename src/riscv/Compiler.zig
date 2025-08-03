@@ -28,7 +28,7 @@ fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: 
     };
 }
 
-// this would be the same as randomImpl if not for https://github.com/ziglang/zig/issues/24668
+// TODO change to always use randomImpl once https://github.com/ziglang/zig/pull/24669 lands in a tarball
 fn randomImpl32(context: *Context) callconv(.c) u8 {
     const cpu: *chip8.Cpu = @alignCast(@fieldParentPtr("context", context));
     return cpu.random.random().int(u8);
@@ -214,13 +214,13 @@ const riscv64_c_trampolines = makeRiscvTrampolines(.@"64", true) catch unreachab
 const Compiler = @This();
 
 const RegisterScope = struct {
-    compiler: *Compiler,
+    a: *riscv.Assembler,
     v_regs_saved: bool = false,
     i_saved: bool = false,
     temp_regs_used: u8 = 0,
 
     pub fn init(compiler: *Compiler) RegisterScope {
-        return .{ .compiler = compiler };
+        return .{ .a = &compiler.assembler };
     }
 
     pub fn tempReg(self: *RegisterScope) riscv.Register {
@@ -237,24 +237,24 @@ const RegisterScope = struct {
         self.v_regs_saved = true;
         for (0..16) |vx| {
             const host = hostRegFromV(@intCast(vx));
-            if (!host.isSaved()) {
-                try self.compiler.assembler.sb(host, @intCast(vx + @offsetOf(Context, "v")), ctx_reg);
+            if (!host.isCalleeSaved()) {
+                try self.a.sb(host, @intCast(vx + @offsetOf(Context, "v")), ctx_reg);
             }
         }
     }
 
     pub fn saveIForHostCall(self: *RegisterScope) !void {
         self.i_saved = true;
-        try self.compiler.assembler.store_register(i_reg, @intCast(@offsetOf(Context, "i")), ctx_reg);
+        try self.a.store_register(i_reg, @intCast(@offsetOf(Context, "i")), ctx_reg);
     }
 
-    pub fn restoreV(self: *RegisterScope) !void {
+    pub fn restoreVRegsFromHostCall(self: *RegisterScope) !void {
         if (self.v_regs_saved) {
             self.v_regs_saved = false;
             for (0..16) |vx| {
                 const host = hostRegFromV(@intCast(vx));
-                if (!host.isSaved()) {
-                    try self.compiler.assembler.lbu(host, @intCast(vx + @offsetOf(Context, "v")), ctx_reg);
+                if (!host.isCalleeSaved()) {
+                    try self.a.lbu(host, @intCast(vx + @offsetOf(Context, "v")), ctx_reg);
                 }
             }
         }
@@ -263,7 +263,7 @@ const RegisterScope = struct {
     pub fn restoreI(self: *RegisterScope) !void {
         if (self.i_saved) {
             self.i_saved = false;
-            try self.compiler.assembler.load_register(i_reg, @intCast(@offsetOf(Context, "i")), ctx_reg);
+            try self.a.load_register(i_reg, @intCast(@offsetOf(Context, "i")), ctx_reg);
         }
     }
 
@@ -360,12 +360,12 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
                     try a.mv(tmp_return_value, .a0);
                     try a.lw(ctx_reg, 0, .sp);
                     try a.addi(.sp, .sp, 16);
-                    try scope.restoreV();
+                    try scope.restoreVRegsFromHostCall();
                     try a.andi(hostRegFromV(dst_reg), tmp_return_value, mask);
                 },
                 .@"64" => {
                     try self.callHost(.random);
-                    try scope.restoreV();
+                    try scope.restoreVRegsFromHostCall();
                     // this writes to the output V register but needs a1 to be the random result
                     // instead of I. so it must overwrite the V registers that were saved across
                     // the host call, but it must use a1 before it is restored to the value of I

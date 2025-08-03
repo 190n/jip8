@@ -40,7 +40,7 @@ pub const Register = enum(u5) {
     /// Frame pointer
     pub const fp: Register = .s0;
 
-    pub fn isSaved(self: Register) bool {
+    pub fn isCalleeSaved(self: Register) bool {
         return switch (self) {
             .ra, .sp, .gp, .tp, .s0, .s1, .s2, .s3, .s4, .s5, .s6, .s7, .s8, .s9, .s10, .s11 => true,
             else => false,

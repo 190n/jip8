@@ -25,12 +25,22 @@ pub const Context = extern struct {
     pub fn yield(self: *Context) callconv(.c) *Context {
         self.did_exit = false;
         std.log.info(
-            "V = {{ {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} }}",
-            .{ self.v[0x0], self.v[0x1], self.v[0x2], self.v[0x3], self.v[0x4], self.v[0x5], self.v[0x6], self.v[0x7], self.v[0x8], self.v[0x9], self.v[0xa], self.v[0xb], self.v[0xc], self.v[0xd], self.v[0xe], self.v[0xf] },
+            "V = {{" ++ (" {x:0>2}" ** 16) ++ " }}",
+            .{
+                self.v[0x0], self.v[0x1], self.v[0x2], self.v[0x3],
+                self.v[0x4], self.v[0x5], self.v[0x6], self.v[0x7],
+                self.v[0x8], self.v[0x9], self.v[0xa], self.v[0xb],
+                self.v[0xc], self.v[0xd], self.v[0xe], self.v[0xf],
+            },
         );
-        std.log.info("I = {x}", .{@intFromPtr(self.i) -% @intFromPtr(&self.memory)});
+        std.log.info("I = {x}", .{self.guestI()});
         _ = coroutine.switchStacks(self);
         return self;
+    }
+
+    /// Returns I as seen by the guest (a 12-bit offset) instead of as a host pointer
+    pub fn guestI(self: *const Context) u12 {
+        return @intCast(@intFromPtr(self.i) - @intFromPtr(&self.memory[0]));
     }
 };
 
