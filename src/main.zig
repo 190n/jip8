@@ -34,8 +34,32 @@ pub fn main() !void {
 
     try compiler.prologue();
     for ([_]u16{
-        0xa800,
-        0xc10f,
+        // store values at end of memory
+        0xaff8,
+        0x6000,
+        0x6111,
+        0x6222,
+        0x6333,
+        0x6444,
+        0x6555,
+        0x6666,
+        0x6777,
+        0xf755,
+        // store values at start of memory
+        0xa000,
+        0x6088,
+        0x6199,
+        0x62aa,
+        0x63bb,
+        0x64cc,
+        0x65dd,
+        0x66ee,
+        0x67ff,
+        0xf755,
+        // load everything
+        0xaff8,
+        0xff65,
+        // nop
         0x7000,
     }) |ins| {
         try compiler.compile(@enumFromInt(ins));

@@ -321,6 +321,19 @@ pub fn jal(self: *Assembler, rd: Register, offset: i21) !void {
     try self.emit(Instruction.makeJ(.jal, rd, @bitCast(offset)));
 }
 
+pub fn j(self: *Assembler, offset: i21) !void {
+    return self.jal(.zero, offset);
+}
+
+pub fn bltu(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
+    assert(@rem(offset, 2) == 0);
+    try self.emit(Instruction.makeB(.branch, 0b110, rs1, rs2, @bitCast(offset)));
+}
+
+pub fn bgtu(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
+    return self.bltu(rs2, rs1, offset);
+}
+
 /// Shift imm left by 12, sign-extend to 64 bits, add to the address of the auipc instruction, and
 /// store in rd
 pub fn auipc(self: *Assembler, rd: Register, imm: u20) !void {

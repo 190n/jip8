@@ -18,7 +18,24 @@ const host_functions = struct {
         .riscv64 => &randomImpl,
         else => unreachable,
     };
+    pub const load_slow = &loadSlow;
 };
+
+// load instruction where the I register could overflow
+fn loadSlow(context: *Context, i: *const u8, reg_count: u8) callconv(.c) extern struct {
+    context: *Context,
+    i: *const u8,
+} {
+    // riscv32 blocked on 24669
+    comptime std.debug.assert(@import("builtin").cpu.arch == .riscv64);
+
+    var guest_i: u12 = @intCast(@intFromPtr(i) - @intFromPtr(&context.memory));
+    for (0..reg_count, context.v[0..]) |_, *register| {
+        register.* = context.memory[guest_i];
+        guest_i +%= 1;
+    }
+    return .{ .context = context, .i = &context.memory[guest_i] };
+}
 
 fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: u8 } {
     const cpu: *chip8.Cpu = @alignCast(@fieldParentPtr("context", context));
@@ -215,7 +232,8 @@ const Compiler = @This();
 
 const RegisterScope = struct {
     a: *riscv.Assembler,
-    v_regs_saved: bool = false,
+    /// bitmap
+    v_regs_saved: u16 = 0,
     i_saved: bool = false,
     temp_regs_used: u8 = 0,
 
@@ -233,29 +251,37 @@ const RegisterScope = struct {
         };
     }
 
+    pub fn saveV(self: *RegisterScope, vx: u4) !void {
+        try self.a.sb(hostRegFromV(vx), @as(i12, vx) + @offsetOf(Context, "v"), ctx_reg);
+        self.v_regs_saved |= @as(u16, 1) << vx;
+    }
+
+    pub fn restoreV(self: *RegisterScope, vx: u4) !void {
+        try self.a.lbu(hostRegFromV(vx), @as(i12, vx) + @offsetOf(Context, "v"), ctx_reg);
+        // we allow restoring registers that were not saved before
+        // to support a host call changing registers by setting them in memory instead of returning the new value
+        self.v_regs_saved &= ~(@as(u16, 1) << vx);
+    }
+
     pub fn saveVRegsForHostCall(self: *RegisterScope) !void {
-        self.v_regs_saved = true;
         for (0..16) |vx| {
             const host = hostRegFromV(@intCast(vx));
             if (!host.isCalleeSaved()) {
-                try self.a.sb(host, @intCast(vx + @offsetOf(Context, "v")), ctx_reg);
+                try self.saveV(@intCast(vx));
             }
         }
     }
 
     pub fn saveIForHostCall(self: *RegisterScope) !void {
         self.i_saved = true;
-        try self.a.store_register(i_reg, @intCast(@offsetOf(Context, "i")), ctx_reg);
+        try self.a.store_register(i_reg, @offsetOf(Context, "i"), ctx_reg);
     }
 
     pub fn restoreVRegsFromHostCall(self: *RegisterScope) !void {
-        if (self.v_regs_saved) {
-            self.v_regs_saved = false;
-            for (0..16) |vx| {
-                const host = hostRegFromV(@intCast(vx));
-                if (!host.isCalleeSaved()) {
-                    try self.a.lbu(host, @intCast(vx + @offsetOf(Context, "v")), ctx_reg);
-                }
+        for (0..16) |vx| {
+            const host = hostRegFromV(@intCast(vx));
+            if (!host.isCalleeSaved()) {
+                try self.restoreV(@intCast(vx));
             }
         }
     }
@@ -263,12 +289,12 @@ const RegisterScope = struct {
     pub fn restoreI(self: *RegisterScope) !void {
         if (self.i_saved) {
             self.i_saved = false;
-            try self.a.load_register(i_reg, @intCast(@offsetOf(Context, "i")), ctx_reg);
+            try self.a.load_register(i_reg, @offsetOf(Context, "i"), ctx_reg);
         }
     }
 
     pub fn isRestored(self: *const RegisterScope) bool {
-        return !self.v_regs_saved and !self.i_saved;
+        return self.v_regs_saved == 0 and !self.i_saved;
     }
 };
 
@@ -315,6 +341,31 @@ fn hostRegFromV(guest_register: u4) riscv.Register {
 const ctx_reg = riscv.Register.a0;
 const i_reg = riscv.Register.a1;
 
+const Marker = struct {
+    compiler: *Compiler,
+    offset: usize,
+
+    /// Edit the branch instruction at the marker so its target will be the next instruction
+    /// written to the compiler
+    pub fn insertForwardBranchToNextInstruction(self: *const Marker) void {
+        const ins: *align(2) riscv.Instruction = @alignCast(@ptrCast(&self.compiler.code.writable.list.items[self.offset]));
+        const offset: i13 = @intCast(self.compiler.code.writable.list.items.len - self.offset);
+        ins.assignB(offset);
+    }
+
+    /// Edit the jump instruction at the marker so its target will be the next instruction
+    /// written to the compiler
+    pub fn insertForwardJumpToNextInstruction(self: *const Marker) void {
+        const ins: *align(2) riscv.Instruction = @alignCast(@ptrCast(&self.compiler.code.writable.list.items[self.offset]));
+        const offset: i21 = @intCast(self.compiler.code.writable.list.items.len - self.offset);
+        ins.assignJ(offset);
+    }
+};
+
+fn markNextInstruction(self: *Compiler) Marker {
+    return .{ .compiler = self, .offset = self.code.writable.list.items.len };
+}
+
 pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
     const a = &self.assembler;
     try self.callHost(.check_remaining);
@@ -357,6 +408,8 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
                     try a.sw(ctx_reg, 0, .sp);
                     try self.callHost(.random);
                     const tmp_return_value = scope.tempReg();
+                    // this dance assumes ctx is a0
+                    comptime std.debug.assert(ctx_reg == .a0);
                     try a.mv(tmp_return_value, .a0);
                     try a.lw(ctx_reg, 0, .sp);
                     try a.addi(.sp, .sp, 16);
@@ -384,24 +437,55 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             try a.addi(i_reg, i_reg, reg_count);
         },
         .load => |up_to| {
-            // TODO wrap I around
             const reg_count = @as(u8, up_to) + 1;
+            // calculate the max pointer I can be to load all these registers
+            // without wrapping around
+            const max_i = scope.tempReg();
+            try a.li(max_i, @as(i32, @offsetOf(Context, "memory")) + 0xfff - reg_count);
+            try a.add(max_i, ctx_reg, max_i);
+            const mark_branch_to_slow_path = self.markNextInstruction();
+            // will be overwritten to branch to slow path
+            try a.bgtu(i_reg, max_i, 0);
+
+            // fast path, load everything in order
             for (0..reg_count) |vx_usize| {
                 const vx: u4 = @intCast(vx_usize);
                 try a.lbu(hostRegFromV(vx), vx, i_reg);
             }
             try a.addi(i_reg, i_reg, reg_count);
+            const mark_jump_over_slow_path = self.markNextInstruction();
+            // will be overwritten to jump over slow path
+            try a.j(0);
 
-            // compute the max I without wraparound:
-            // if we load 2 registers, I can be at most FFD (load from [FFD] and [FFE], then leave set to [FFF])
-            // so maximum I is FFF minus reg_count
-            // add this value to the memory offset to get an offset from ctx
-            // this value never fits in a small immediate :(
-            //
-            // li t0, (offset + FFF minus reg_count)
-            // add t0, ctx, t0
-            // bgtu i, t0, slow_path (aka bltu t0, i, slow_path)
-            //
+            // slow path:
+            mark_branch_to_slow_path.insertForwardBranchToNextInstruction();
+
+            // save all V registers that are temporaries (so could be clobbered by the host call)
+            // and that we're not about to load into (so we need to restore their values)
+            for (reg_count..16) |vx_usize| {
+                const vx: u4 = @intCast(vx_usize);
+                const host_reg = hostRegFromV(vx);
+                if (!host_reg.isCalleeSaved()) {
+                    try scope.saveV(vx);
+                }
+            }
+            // do the host call
+            std.debug.assert(i_reg == .a1);
+            try a.li(.a2, reg_count);
+            try self.callHost(.load_slow);
+            // host call can return its new I in a1 which is fine
+            // restore V0-VX plus any temporaries from the first step
+            for (0..16) |vx_usize| {
+                const vx: u4 = @intCast(vx_usize);
+                const host_reg = hostRegFromV(vx);
+                if (vx <= up_to or !host_reg.isCalleeSaved()) {
+                    try scope.restoreV(vx);
+                }
+            }
+
+            // let the fast path jump here
+            // TODO what if this is the last instruction?
+            mark_jump_over_slow_path.insertForwardJumpToNextInstruction();
         },
 
         .invalid => |opcode| {

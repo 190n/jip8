@@ -40,7 +40,8 @@ pub const Context = extern struct {
 
     /// Returns I as seen by the guest (a 12-bit offset) instead of as a host pointer
     pub fn guestI(self: *const Context) u12 {
-        return @intCast(@intFromPtr(self.i) - @intFromPtr(&self.memory[0]));
+        // TODO intCast -- only truncate to work around store being broken and setting I to be OOB
+        return @truncate(@intFromPtr(self.i) - @intFromPtr(&self.memory[0]));
     }
 };
 

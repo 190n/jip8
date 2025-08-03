@@ -268,6 +268,15 @@ pub const Instruction = packed union {
         } };
     }
 
+    /// Edit the B-immediate bits of this instruction to be imm. The rest of the instruction is unchanged.
+    pub fn assignB(self: *align(2) Instruction, imm: i13) void {
+        const uimm: u13 = @bitCast(imm);
+        self.b.imm_4_1 = @truncate(uimm >> 1);
+        self.b.imm_10_5 = @truncate(uimm >> 5);
+        self.b.imm_11 = @truncate(uimm >> 11);
+        self.b.imm_12 = @truncate(uimm >> 12);
+    }
+
     pub fn makeJ(opcode: Opcode, rd: Register, imm: u21) Instruction {
         std.debug.assert(imm % 2 == 0);
         return .{ .j = .{
@@ -278,6 +287,15 @@ pub const Instruction = packed union {
             .imm_10_1 = @truncate(imm >> 1),
             .imm_20 = @truncate(imm >> 20),
         } };
+    }
+
+    /// Edit the J-immediate bits of this instruction to be imm. The rest of the instruction is unchanged.
+    pub fn assignJ(self: *align(2) Instruction, imm: i21) void {
+        const uimm: u21 = @bitCast(imm);
+        self.j.imm_10_1 = @truncate(uimm >> 1);
+        self.j.imm_11 = @truncate(uimm >> 11);
+        self.j.imm_19_12 = @truncate(uimm >> 12);
+        self.j.imm_20 = @truncate(uimm >> 20);
     }
 
     pub fn any(self: Instruction) AnyInstruction {
