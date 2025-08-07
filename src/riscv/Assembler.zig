@@ -325,13 +325,64 @@ pub fn j(self: *Assembler, offset: i21) !void {
     return self.jal(.zero, offset);
 }
 
-pub fn bltu(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
+/// If rs1 == rs2, branch to pc + offset
+pub fn beq(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
     assert(@rem(offset, 2) == 0);
-    try self.emit(Instruction.makeB(.branch, 0b110, rs1, rs2, @bitCast(offset)));
+    try self.emit(Instruction.makeB(.branch, .beq, rs1, rs2, @bitCast(offset)));
 }
 
+/// If rs1 != rs2, branch to pc + offset
+pub fn bne(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
+    assert(@rem(offset, 2) == 0);
+    try self.emit(Instruction.makeB(.branch, .bne, rs1, rs2, @bitCast(offset)));
+}
+
+/// If rs1 < rs2 (signed comparison), branch to pc + offset
+pub fn blt(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
+    assert(@rem(offset, 2) == 0);
+    try self.emit(Instruction.makeB(.branch, .blt, rs1, rs2, @bitCast(offset)));
+}
+
+/// If rs1 < rs2 (unsigned comparison), branch to pc + offset
+pub fn bltu(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
+    assert(@rem(offset, 2) == 0);
+    try self.emit(Instruction.makeB(.branch, .bltu, rs1, rs2, @bitCast(offset)));
+}
+
+/// If rs1 >= rs2 (signed comparison), branch to pc + offset
+pub fn bge(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
+    assert(@rem(offset, 2) == 0);
+    try self.emit(Instruction.makeB(.branch, .bge, rs1, rs2, @bitCast(offset)));
+}
+
+/// If rs1 >= rs2 (unsigned comparison), branch to pc + offset
+pub fn bgeu(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
+    assert(@rem(offset, 2) == 0);
+    try self.emit(Instruction.makeB(.branch, .bgeu, rs1, rs2, @bitCast(offset)));
+}
+
+/// If rs1 > rs2 (signed comparison), branch to pc + offset
+/// Pseudoinstruction for blt rs2, rs1, offset
+pub fn bgt(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
+    return self.blt(rs2, rs1, offset);
+}
+
+/// If rs1 > rs2 (unsigned comparison), branch to pc + offset
+/// Pseudoinstruction for bltu rs2, rs1, offset
 pub fn bgtu(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
     return self.bltu(rs2, rs1, offset);
+}
+
+/// If rs1 > rs2 (signed comparison), branch to pc + offset
+/// Pseudoinstruction for blt rs2, rs1, offset
+pub fn ble(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
+    return self.bge(rs2, rs1, offset);
+}
+
+/// If rs1 > rs2 (unsigned comparison), branch to pc + offset
+/// Pseudoinstruction for bltu rs2, rs1, offset
+pub fn bleu(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
+    return self.bgeu(rs2, rs1, offset);
 }
 
 /// Shift imm left by 12, sign-extend to 64 bits, add to the address of the auipc instruction, and

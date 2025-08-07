@@ -156,7 +156,7 @@ pub const Instruction = packed union {
         opcode: Opcode,
         imm_11: u1,
         imm_4_1: u4,
-        funct3: u3,
+        funct3: Funct3Branch,
         rs1: Register,
         rs2: Register,
         imm_10_5: u6,
@@ -175,6 +175,15 @@ pub const Instruction = packed union {
         imm_10_1: u10,
         imm_20: u1,
     },
+
+    pub const Funct3Branch = enum(u3) {
+        beq = 0b000,
+        bne = 0b001,
+        blt = 0b100,
+        bge = 0b101,
+        bltu = 0b110,
+        bgeu = 0b111,
+    };
 
     pub const Compressed = packed union {
         cr: packed struct(u16) {
@@ -254,7 +263,7 @@ pub const Instruction = packed union {
         } };
     }
 
-    pub fn makeB(opcode: Opcode, funct3: u3, rs1: Register, rs2: Register, imm: u13) Instruction {
+    pub fn makeB(opcode: Opcode, funct3: Funct3Branch, rs1: Register, rs2: Register, imm: u13) Instruction {
         std.debug.assert(imm % 2 == 0);
         return .{ .b = .{
             .opcode = opcode,
@@ -270,6 +279,7 @@ pub const Instruction = packed union {
 
     /// Edit the B-immediate bits of this instruction to be imm. The rest of the instruction is unchanged.
     pub fn assignB(self: *align(2) Instruction, imm: i13) void {
+        std.debug.assert(@rem(imm, 2) == 0);
         const uimm: u13 = @bitCast(imm);
         self.b.imm_4_1 = @truncate(uimm >> 1);
         self.b.imm_10_5 = @truncate(uimm >> 5);
@@ -291,6 +301,7 @@ pub const Instruction = packed union {
 
     /// Edit the J-immediate bits of this instruction to be imm. The rest of the instruction is unchanged.
     pub fn assignJ(self: *align(2) Instruction, imm: i21) void {
+        std.debug.assert(@rem(imm, 2) == 0);
         const uimm: u21 = @bitCast(imm);
         self.j.imm_10_1 = @truncate(uimm >> 1);
         self.j.imm_11 = @truncate(uimm >> 11);
