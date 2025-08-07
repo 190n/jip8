@@ -58,7 +58,7 @@ pub fn main() !void {
         0xf755,
         // load everything
         0xaff8,
-        0xff65,
+        0xf665,
         // nop
         0x7000,
     }) |ins| {

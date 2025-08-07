@@ -18,24 +18,7 @@ const host_functions = struct {
         .riscv64 => &randomImpl,
         else => unreachable,
     };
-    pub const load_slow = &loadSlow;
 };
-
-// load instruction where the I register could overflow
-fn loadSlow(context: *Context, i: *const u8, reg_count: u8) callconv(.c) extern struct {
-    context: *Context,
-    i: *const u8,
-} {
-    // riscv32 blocked on 24669
-    comptime std.debug.assert(@import("builtin").cpu.arch == .riscv64);
-
-    var guest_i: u12 = @intCast(@intFromPtr(i) - @intFromPtr(&context.memory));
-    for (0..reg_count, context.v[0..]) |_, *register| {
-        register.* = context.memory[guest_i];
-        guest_i +%= 1;
-    }
-    return .{ .context = context, .i = &context.memory[guest_i] };
-}
 
 fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: u8 } {
     const cpu: *chip8.Cpu = @alignCast(@fieldParentPtr("context", context));
@@ -370,6 +353,7 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
     const a = &self.assembler;
     try self.callHost(.check_remaining);
     var scope = RegisterScope.init(self);
+    // make sure everything we save gets restored by the end
     defer std.debug.assert(scope.isRestored());
     switch (instruction.decode()) {
         .set_register => |ins| {
@@ -443,49 +427,26 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             const max_i = scope.tempReg();
             try a.li(max_i, @as(i32, @offsetOf(Context, "memory")) + 0xfff - reg_count);
             try a.add(max_i, ctx_reg, max_i);
-            const mark_branch_to_slow_path = self.markNextInstruction();
-            // will be overwritten to branch to slow path
+            const mark_branch_to_trap = self.markNextInstruction();
+            // will be overwritten to branch to trap
             try a.bgtu(i_reg, max_i, 0);
 
-            // fast path, load everything in order
+            // load everything in order
             for (0..reg_count) |vx_usize| {
                 const vx: u4 = @intCast(vx_usize);
                 try a.lbu(hostRegFromV(vx), vx, i_reg);
             }
             try a.addi(i_reg, i_reg, reg_count);
-            const mark_jump_over_slow_path = self.markNextInstruction();
-            // will be overwritten to jump over slow path
+            const mark_jump_over_trap = self.markNextInstruction();
+            // will be overwritten to jump over trap
             try a.j(0);
 
-            // slow path:
-            mark_branch_to_slow_path.insertForwardBranchToNextInstruction();
+            mark_branch_to_trap.insertForwardBranchToNextInstruction();
+            try a.ebreak();
 
-            // save all V registers that are temporaries (so could be clobbered by the host call)
-            // and that we're not about to load into (so we need to restore their values)
-            for (reg_count..16) |vx_usize| {
-                const vx: u4 = @intCast(vx_usize);
-                const host_reg = hostRegFromV(vx);
-                if (!host_reg.isCalleeSaved()) {
-                    try scope.saveV(vx);
-                }
-            }
-            // do the host call
-            std.debug.assert(i_reg == .a1);
-            try a.li(.a2, reg_count);
-            try self.callHost(.load_slow);
-            // host call can return its new I in a1 which is fine
-            // restore V0-VX plus any temporaries from the first step
-            for (0..16) |vx_usize| {
-                const vx: u4 = @intCast(vx_usize);
-                const host_reg = hostRegFromV(vx);
-                if (vx <= up_to or !host_reg.isCalleeSaved()) {
-                    try scope.restoreV(vx);
-                }
-            }
-
-            // let the fast path jump here
+            // let the normal path jump here
             // TODO what if this is the last instruction?
-            mark_jump_over_slow_path.insertForwardJumpToNextInstruction();
+            mark_jump_over_trap.insertForwardJumpToNextInstruction();
         },
 
         .invalid => |opcode| {
