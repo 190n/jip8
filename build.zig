@@ -1,7 +1,25 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const rv32 = b.option(bool, "rv32", "Compile for 32-bit RISC-V instead of 64-bit") orelse false;
+    const no_c = b.option(bool, "no_c", "Compile without compressed extension") orelse false;
+    const float = b.option(enum { none, single, double }, "float", "Which if any floating-point extension to support") orelse .none;
+    const cpu = b.fmt(
+        "generic_rv{[bits]}+m+a{[compressed]s}{[float]s}",
+        .{
+            .bits = @as(u8, if (rv32) 32 else 64),
+            .compressed = if (no_c) "" else "+c",
+            .float = switch (float) {
+                .none => "",
+                .single => "+f",
+                .double => "+f+d",
+            },
+        },
+    );
+    const target = b.resolveTargetQuery(std.Target.Query.parse(.{
+        .arch_os_abi = if (rv32) "riscv32-linux-gnu" else "riscv64-linux-gnu",
+        .cpu_features = cpu,
+    }) catch unreachable);
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
