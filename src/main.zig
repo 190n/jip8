@@ -24,7 +24,7 @@ pub fn main() !void {
     defer allocator.free(stack);
 
     var compiler: Compiler = undefined;
-    try compiler.init(allocator, if (builtin.cpu.arch.isRISCV())
+    compiler.init(allocator, if (builtin.cpu.arch.isRISCV())
         builtin.cpu.features
     else
         std.Target.riscv.featureSet(&.{ .@"64bit", .c }));
@@ -34,32 +34,8 @@ pub fn main() !void {
 
     try compiler.prologue();
     for ([_]u16{
-        // store values at end of memory
-        0xaff8,
-        0x6000,
-        0x6111,
-        0x6222,
-        0x6333,
-        0x6444,
-        0x6555,
-        0x6666,
-        0x6777,
-        0xf755,
-        // store values at start of memory
-        0xa000,
-        0x6088,
-        0x6199,
-        0x62aa,
-        0x63bb,
-        0x64cc,
-        0x65dd,
-        0x66ee,
-        0x67ff,
-        0xf755,
-        // load everything
-        0xaff8,
-        0xf665,
-        // nop
+        0xc0ff,
+        0x7001,
         0x7000,
     }) |ins| {
         try compiler.compile(@enumFromInt(ins));

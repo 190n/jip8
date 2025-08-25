@@ -10,14 +10,16 @@ const HostFunction = std.meta.DeclEnum(host_functions);
 code: code_buffer.Any,
 assembler: riscv.Assembler,
 trampolines: *const HostFunctionTrampolines,
+entrypoint_offset: usize,
+check_remaining: Marker,
 
 const host_functions = struct {
-    pub const check_remaining = &riscvCheckRemaining;
     pub const random = switch (@import("builtin").cpu.arch) {
         .riscv32 => &randomImpl32,
         .riscv64 => &randomImpl,
         else => unreachable,
     };
+    pub const yield = &chip8.Cpu.Context.yield;
 };
 
 fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: u8 } {
@@ -32,72 +34,6 @@ fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: 
 fn randomImpl32(context: *Context) callconv(.c) u8 {
     const cpu: *chip8.Cpu = @alignCast(@fieldParentPtr("context", context));
     return cpu.random.random().int(u8);
-}
-
-fn riscvCheckRemaining() callconv(.naked) void {
-    const store_instruction: []const u8 = comptime switch (@import("builtin").cpu.arch) {
-        .riscv32 => "sw",
-        .riscv64 => "sd",
-        else => unreachable,
-    };
-    const load_instruction: []const u8 = comptime switch (@import("builtin").cpu.arch) {
-        .riscv32 => "lw",
-        .riscv64 => "ld",
-        else => unreachable,
-    };
-
-    // TODO:
-    // assemble this code into the JIT region, and use hostCall to call yield
-    // so that the fast path is a jump nearby and only the uncommon case of
-    // actually yielding has to read the address and indirect call
-    asm volatile (std.fmt.comptimePrint(
-            \\beqz s1, yield
-            \\addi s1, s1, -1
-            \\ret
-            \\yield:
-            \\addi sp, sp, -16
-            \\{[store]s} ra, 0(sp)
-        ,
-            .{ .store = store_instruction },
-        ));
-
-    asm volatile (std.fmt.comptimePrint(
-            "{[store]s} a1, {[offset]}(a0)",
-            .{ .store = store_instruction, .offset = @offsetOf(Context, "i") },
-        ));
-    inline for (0..16) |vx| {
-        const host = comptime hostRegFromV(@intCast(vx));
-        asm volatile (std.fmt.comptimePrint(
-                "sb {s}, {}(a0)",
-                .{ @tagName(host), vx + @offsetOf(Context, "v") },
-            ));
-    }
-
-    asm volatile ("call %[yield]"
-        :
-        : [yield] "X" (&Context.yield),
-    );
-
-    asm volatile (std.fmt.comptimePrint(
-            "{[load]s} a1, {[offset]}(a0)",
-            .{ .load = load_instruction, .offset = @offsetOf(Context, "i") },
-        ));
-    asm volatile (std.fmt.comptimePrint("lhu s1, {}(a0)", .{@offsetOf(Context, "instructions_remaining")}));
-    inline for (0..16) |vx| {
-        const host_reg = comptime hostRegFromV(@intCast(vx));
-        asm volatile (std.fmt.comptimePrint(
-                "lbu {s}, {}(a0)",
-                .{ @tagName(host_reg), vx + @offsetOf(Context, "v") },
-            ));
-    }
-
-    asm volatile (std.fmt.comptimePrint(
-            \\{[load]s} ra, 0(sp)
-            \\addi sp, sp, 16
-            \\ret
-        ,
-            .{ .load = load_instruction },
-        ));
 }
 
 const HostFunctionTrampolines = struct {
@@ -281,23 +217,52 @@ const RegisterScope = struct {
     }
 };
 
-pub fn init(self: *Compiler, allocator: std.mem.Allocator, feature_set: std.Target.Cpu.Feature.Set) !void {
+pub fn init(self: *Compiler, allocator: std.mem.Allocator, feature_set: std.Target.Cpu.Feature.Set) void {
     self.* = .{
         .code = .{ .writable = .init(allocator) },
         .assembler = undefined,
         .trampolines = undefined,
+        .entrypoint_offset = 0,
+        .check_remaining = undefined,
     };
     self.assembler = .init(&self.code.writable.interface, feature_set);
     self.trampolines = switch (self.assembler.features.bits) {
         .@"32" => if (self.assembler.hasCompressed()) &riscv32_c_trampolines else &riscv32_trampolines,
         .@"64" => if (self.assembler.hasCompressed()) &riscv64_c_trampolines else &riscv64_trampolines,
     };
-    try self.code.writable.interface.writeAll(self.trampolines.code_template);
-    self.trampolines.write(self.code.writable.list.items);
 }
 
 pub fn prologue(self: *Compiler) !void {
+    // insert trampolines to indirectly call host functions
+    try self.code.writable.interface.writeAll(self.trampolines.code_template);
+    self.trampolines.write(self.code.writable.list.items);
+
+    // insert the fast path to check if we can keep going
+    self.check_remaining = self.markNextInstruction();
     const a = &self.assembler;
+
+    const branch_to_yield = self.markNextInstruction();
+    try a.beq(.s1, .zero, 0);
+    try a.addi(.s1, .s1, -1);
+    try a.ret();
+
+    // yield:
+    branch_to_yield.insertForwardBranchToNextInstruction(self);
+    var scope = RegisterScope.init(self);
+    try a.addi(.sp, .sp, -16);
+    try a.store_register(.ra, 0, .sp);
+    try scope.saveIForHostCall();
+    try scope.saveVRegsForHostCall();
+    try self.callHost(.yield);
+    try scope.restoreVRegsFromHostCall();
+    try scope.restoreI();
+    try a.lhu(.s1, @offsetOf(Context, "instructions_remaining"), ctx_reg);
+    try a.load_register(.ra, 0, .sp);
+    try a.addi(.sp, .sp, 16);
+    try a.ret();
+
+    // below is where code starts running from
+    self.entrypoint_offset = self.code.writable.list.items.len;
     try a.addi(.sp, .sp, -16);
     try a.store_register(.ra, 0, .sp);
     try a.lhu(.s1, @offsetOf(Context, "instructions_remaining"), .a0);
@@ -325,33 +290,32 @@ const ctx_reg = riscv.Register.a0;
 const i_reg = riscv.Register.a1;
 
 const Marker = struct {
-    compiler: *Compiler,
     offset: usize,
 
     /// Edit the branch instruction at the marker so its target will be the next instruction
     /// written to the compiler
-    pub fn insertForwardBranchToNextInstruction(self: *const Marker) void {
-        const ins: *align(2) riscv.Instruction = @alignCast(@ptrCast(&self.compiler.code.writable.list.items[self.offset]));
-        const offset: i13 = @intCast(self.compiler.code.writable.list.items.len - self.offset);
+    pub fn insertForwardBranchToNextInstruction(self: *const Marker, compiler: *Compiler) void {
+        const ins: *align(2) riscv.Instruction = @ptrCast(@alignCast(&compiler.code.writable.list.items[self.offset]));
+        const offset: i13 = @intCast(compiler.code.writable.list.items.len - self.offset);
         ins.assignB(offset);
     }
 
     /// Edit the jump instruction at the marker so its target will be the next instruction
     /// written to the compiler
-    pub fn insertForwardJumpToNextInstruction(self: *const Marker) void {
-        const ins: *align(2) riscv.Instruction = @alignCast(@ptrCast(&self.compiler.code.writable.list.items[self.offset]));
-        const offset: i21 = @intCast(self.compiler.code.writable.list.items.len - self.offset);
+    pub fn insertForwardJumpToNextInstruction(self: *const Marker, compiler: *Compiler) void {
+        const ins: *align(2) riscv.Instruction = @ptrCast(@alignCast(&compiler.code.writable.list.items[self.offset]));
+        const offset: i21 = @intCast(compiler.code.writable.list.items.len - self.offset);
         ins.assignJ(offset);
     }
 };
 
 fn markNextInstruction(self: *Compiler) Marker {
-    return .{ .compiler = self, .offset = self.code.writable.list.items.len };
+    return .{ .offset = self.code.writable.list.items.len };
 }
 
 pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
     const a = &self.assembler;
-    try self.callHost(.check_remaining);
+    try a.jal(.ra, @intCast(@as(isize, @intCast(self.check_remaining.offset)) - @as(isize, @intCast(self.code.writable.list.items.len))));
     var scope = RegisterScope.init(self);
     // make sure everything we save gets restored by the end
     defer std.debug.assert(scope.isRestored());
@@ -441,12 +405,12 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             // will be overwritten to jump over trap
             try a.j(0);
 
-            mark_branch_to_trap.insertForwardBranchToNextInstruction();
+            mark_branch_to_trap.insertForwardBranchToNextInstruction(self);
             try a.ebreak();
 
             // let the normal path jump here
             // TODO what if this is the last instruction?
-            mark_jump_over_trap.insertForwardJumpToNextInstruction();
+            mark_jump_over_trap.insertForwardJumpToNextInstruction(self);
         },
 
         .invalid => |opcode| {
@@ -499,7 +463,7 @@ pub fn makeExecutable(self: *Compiler) !void {
 }
 
 pub fn entrypoint(self: *const Compiler) chip8.Cpu.GuestFunction {
-    return self.code.executable.entrypoint(chip8.Cpu.GuestFunction, self.trampolines.code_template.len);
+    return self.code.executable.entrypoint(chip8.Cpu.GuestFunction, self.entrypoint_offset);
 }
 
 pub fn deinit(self: *Compiler) !void {
