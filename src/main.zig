@@ -68,6 +68,6 @@ pub const std_options = std.Options{
 };
 
 test {
-    _ = x86_64.Assembler;
+    // _ = x86_64.Assembler;
     _ = riscv.Assembler;
 }

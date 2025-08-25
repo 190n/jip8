@@ -553,15 +553,11 @@ test "load-immediates are executed correctly" {
 
     for (immediates) |i| {
         var any: code_buffer.Any = .{ .writable = .init(std.testing.allocator) };
-        defer {
-            any.makeWritable() catch unreachable;
-            any.writable.deinit();
-        }
+        defer (any.makeWritable() catch unreachable).deinit();
         var assembler: Assembler = .init(&any.writable.interface, builtin.cpu.features);
         try assembler.li(.a0, i);
         try assembler.ret();
-        try any.makeExecutable(&.{});
-        const code = any.executable.entrypoint(*const fn () callconv(.c) i64, 0);
+        const code = (try any.makeExecutable(&.{})).entrypoint(*const fn () callconv(.c) i64, 0);
         try std.testing.expectEqual(i, code());
     }
 }
