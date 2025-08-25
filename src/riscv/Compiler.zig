@@ -14,11 +14,8 @@ entrypoint_offset: usize,
 check_remaining: Marker,
 
 const host_functions = struct {
-    pub const random = switch (@import("builtin").cpu.arch) {
-        .riscv32 => &randomImpl32,
-        .riscv64 => &randomImpl,
-        else => unreachable,
-    };
+    pub const random = &randomImpl;
+
     pub const yield = &chip8.Cpu.Context.yield;
 };
 
@@ -28,12 +25,6 @@ fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: 
         .a0 = context,
         .a1 = cpu.random.random().int(u8),
     };
-}
-
-// TODO change to always use randomImpl once https://github.com/ziglang/zig/pull/24669 lands in a tarball
-fn randomImpl32(context: *Context) callconv(.c) u8 {
-    const cpu: *chip8.Cpu = @alignCast(@fieldParentPtr("context", context));
-    return cpu.random.random().int(u8);
 }
 
 const HostFunctionTrampolines = struct {
@@ -347,32 +338,12 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             const dst_reg, const mask = ins;
             try scope.saveVRegsForHostCall();
             try scope.saveIForHostCall();
-            switch (self.assembler.features.bits) {
-                .@"32" => {
-                    // 32-bit random impl does not return the context pointer, only the number
-                    // so we need to save the context pointer somewhere
-                    // TODO can probably pick a callee-save
-                    try a.addi(.sp, .sp, -16);
-                    try a.sw(ctx_reg, 0, .sp);
-                    try self.callHost(.random);
-                    const tmp_return_value = scope.tempReg();
-                    // this dance assumes ctx is a0
-                    comptime std.debug.assert(ctx_reg == .a0);
-                    try a.mv(tmp_return_value, .a0);
-                    try a.lw(ctx_reg, 0, .sp);
-                    try a.addi(.sp, .sp, 16);
-                    try scope.restoreVRegsFromHostCall();
-                    try a.andi(hostRegFromV(dst_reg), tmp_return_value, mask);
-                },
-                .@"64" => {
-                    try self.callHost(.random);
-                    try scope.restoreVRegsFromHostCall();
-                    // this writes to the output V register but needs a1 to be the random result
-                    // instead of I. so it must overwrite the V registers that were saved across
-                    // the host call, but it must use a1 before it is restored to the value of I
-                    try a.andi(hostRegFromV(dst_reg), .a1, mask);
-                },
-            }
+            try self.callHost(.random);
+            try scope.restoreVRegsFromHostCall();
+            // this writes to the output V register but needs a1 to be the random result
+            // instead of I. so it must overwrite the V registers that were saved across
+            // the host call, but it must use a1 before it is restored to the value of I
+            try a.andi(hostRegFromV(dst_reg), .a1, mask);
             try scope.restoreI();
         },
         .store => |up_to| {
