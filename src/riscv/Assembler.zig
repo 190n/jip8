@@ -328,12 +328,14 @@ pub fn j(self: *Assembler, offset: i21) !void {
 /// If rs1 == rs2, branch to pc + offset
 pub fn beq(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
     assert(@rem(offset, 2) == 0);
+    // TODO try c.beqz
     try self.emit(Instruction.makeB(.branch, .beq, rs1, rs2, @bitCast(offset)));
 }
 
 /// If rs1 != rs2, branch to pc + offset
 pub fn bne(self: *Assembler, rs1: Register, rs2: Register, offset: i13) !void {
     assert(@rem(offset, 2) == 0);
+    // TODO try c.bnez
     try self.emit(Instruction.makeB(.branch, .bne, rs1, rs2, @bitCast(offset)));
 }
 
