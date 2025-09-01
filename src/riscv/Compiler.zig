@@ -15,8 +15,8 @@ check_remaining: Marker,
 
 const host_functions = struct {
     pub const random = &randomImpl;
-
     pub const yield = &chip8.Cpu.Context.yield;
+    pub const snapshot = &snapshotImpl;
 };
 
 fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: u8 } {
@@ -25,6 +25,70 @@ fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: 
         .a0 = context,
         .a1 = cpu.random.random().int(u8),
     };
+}
+
+fn snapshotImpl() callconv(.naked) void {
+    if (chip8.Cpu.enable_snapshot) {
+        const List = @FieldType(chip8.Cpu, "snapshots");
+        const cpu_offset = -@as(isize, @offsetOf(chip8.Cpu, "context"));
+        const list_offset: isize = @offsetOf(chip8.Cpu, "snapshots");
+        const load_word: []const u8 = switch (@import("builtin").cpu.arch) {
+            .riscv32 => "lw",
+            .riscv64 => "ld",
+            else => unreachable,
+        };
+        const store_word: []const u8 = switch (@import("builtin").cpu.arch) {
+            .riscv32 => "sw",
+            .riscv64 => "sd",
+            else => unreachable,
+        };
+
+        // load word t0, len_offset(ctx_reg)
+        asm volatile (std.fmt.comptimePrint(
+                \\{s} t0, {d}({t})
+            ,
+                .{ load_word, cpu_offset + list_offset + @offsetOf(List, "next"), ctx_reg },
+            ));
+        // load word t1, cap_offset(ctx_reg)
+        asm volatile (std.fmt.comptimePrint(
+                \\{s} t1, {d}({t})
+            ,
+                .{ load_word, cpu_offset + list_offset + @offsetOf(List, "end"), ctx_reg },
+            ));
+        // bgeu t0, t1, trap
+        asm volatile (
+            \\bltu t0, t1, 1f
+            \\unimp
+            \\1:
+        );
+
+        // store each byte with t1 offset
+        inline for (0..16) |x| {
+            asm volatile (std.fmt.comptimePrint(
+                    \\sb x{d}, {d}(t0)
+                ,
+                    .{ x + 16, x + @offsetOf(chip8.Cpu.Snapshot, "v") },
+                ));
+        }
+        // store i with offset
+        asm volatile (std.fmt.comptimePrint(
+                \\sub t1, {t}, {t}
+                \\addi t1, t1, {d}
+                \\sh t1, {d}(t0)
+            ,
+                .{ i_reg, ctx_reg, -@offsetOf(Context, "memory"), @offsetOf(chip8.Cpu.Snapshot, "i") },
+            ));
+        // store len+1 to len
+        asm volatile (std.fmt.comptimePrint(
+                \\addi t0, t0, {d}
+                \\{s} t0, {d}({t})
+                \\ret
+            ,
+                .{ @sizeOf(chip8.Cpu.Snapshot), store_word, cpu_offset + list_offset + @offsetOf(List, "next"), ctx_reg },
+            ));
+    } else {
+        asm volatile ("ret");
+    }
 }
 
 const HostFunctionTrampolines = struct {
@@ -420,6 +484,7 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             std.log.scoped(.compiler).warn("unimplemented chip-8 instruction: {x:0>4} ({s})", .{ @intFromEnum(instruction), @tagName(instruction.decode()) });
         },
     }
+    try self.callHost(.snapshot);
 }
 
 pub fn epilogue(self: *Compiler) !void {

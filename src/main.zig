@@ -37,6 +37,7 @@ pub fn main() !void {
         0xc0ff,
         0x7001,
         0x7000,
+        0xa123,
     }) |ins| {
         try compiler.compile(@enumFromInt(ins));
     }
@@ -49,7 +50,7 @@ pub fn main() !void {
             break :s @truncate(time_unsigned);
         };
 
-        var cpu = Cpu.init(stack, compiler.entrypoint(), seed);
+        var cpu = Cpu.init(stack, compiler.entrypoint(), seed, {});
         const log = std.log.scoped(.host);
 
         const retval = retval: while (true) {

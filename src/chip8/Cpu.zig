@@ -6,6 +6,14 @@ const StackFrame = coroutine.StackFrame;
 
 const Cpu = @This();
 
+pub const Snapshot = struct {
+    pc: void,
+    i: u16,
+    v: [16]u8,
+};
+
+pub const enable_snapshot = builtin.is_test;
+
 /// Portion of the CPU that is used by assembly and must be ABI compatible
 pub const Context = extern struct {
     /// Saved stack pointer (from the host while running guest code, or from the guest while running
@@ -45,11 +53,16 @@ pub const Context = extern struct {
     }
 };
 
-context: Context,
 guest_stack: []align(@alignOf(StackFrame)) u8,
 /// If non-null, reason that the CPU stopped executing code
 exit_reason: ?anyerror = null,
 random: std.Random.DefaultPrng,
+snapshots: if (enable_snapshot) struct {
+    base: [*]Snapshot,
+    next: [*]Snapshot,
+    end: [*]Snapshot,
+} else void,
+context: Context,
 
 const stack_align = @alignOf(StackFrame);
 
@@ -72,6 +85,7 @@ pub fn init(
     guest_stack: []align(stack_align) u8,
     code: GuestFunction,
     random_seed: u64,
+    snapshots: if (enable_snapshot) []Snapshot else void,
 ) Cpu {
     var cpu = Cpu{
         .context = .{
@@ -82,6 +96,11 @@ pub fn init(
         },
         .guest_stack = guest_stack,
         .random = .init(random_seed),
+        .snapshots = if (enable_snapshot) .{
+            .base = snapshots.ptr,
+            .next = snapshots.ptr,
+            .end = snapshots.ptr + snapshots.len,
+        },
     };
     @memset(&cpu.context.v, 0);
     @memset(&cpu.context.memory, 0);
