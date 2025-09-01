@@ -42,50 +42,55 @@ fn snapshotImpl() callconv(.naked) void {
             .riscv64 => "sd",
             else => unreachable,
         };
+        const next_offset = cpu_offset + list_offset + @offsetOf(List, "next");
+        const end_offset = cpu_offset + list_offset + @offsetOf(List, "end");
 
-        // load word t0, len_offset(ctx_reg)
         asm volatile (std.fmt.comptimePrint(
-                \\{s} t0, {d}({t})
-            ,
-                .{ load_word, cpu_offset + list_offset + @offsetOf(List, "next"), ctx_reg },
-            ));
-        // load word t1, cap_offset(ctx_reg)
-        asm volatile (std.fmt.comptimePrint(
-                \\{s} t1, {d}({t})
-            ,
-                .{ load_word, cpu_offset + list_offset + @offsetOf(List, "end"), ctx_reg },
-            ));
-        // bgeu t0, t1, trap
-        asm volatile (
-            \\bltu t0, t1, 1f
-            \\unimp
-            \\1:
+                // load next and end pointers to t0 and t1
+                \\{[load]s} t0, %[next_offset]({[ctx]t})
+                \\{[load]s} t1, %[end_offset]({[ctx]t})
+                // only execute normally if next < end, otherwise trap
+                \\bltu t0, t1, 1f
+                \\ebreak
+                \\1:
+            , .{ .load = load_word, .ctx = ctx_reg })
+            :
+            : [next_offset] "i" (next_offset),
+              [end_offset] "i" (end_offset),
         );
 
-        // store each byte with t1 offset
+        // store each V register in the snapshot
         inline for (0..16) |x| {
+            const offset = @offsetOf(chip8.Cpu.Snapshot, "v") + x;
             asm volatile (std.fmt.comptimePrint(
-                    \\sb x{d}, {d}(t0)
-                ,
-                    .{ x + 16, x + @offsetOf(chip8.Cpu.Snapshot, "v") },
-                ));
+                    \\sb x{[x_reg]d}, %[offset](t0)
+                , .{ .x_reg = x + 16 })
+                :
+                : [offset] "i" (offset),
+            );
         }
-        // store i with offset
+
         asm volatile (std.fmt.comptimePrint(
-                \\sub t1, {t}, {t}
-                \\addi t1, t1, {d}
-                \\sh t1, {d}(t0)
-            ,
-                .{ i_reg, ctx_reg, -@offsetOf(Context, "memory"), @offsetOf(chip8.Cpu.Snapshot, "i") },
-            ));
-        // store len+1 to len
-        asm volatile (std.fmt.comptimePrint(
-                \\addi t0, t0, {d}
-                \\{s} t0, {d}({t})
+                // set t1 to the offset of i past the context pointer
+                \\sub t1, {[i]t}, {[ctx]t}
+                // subtract the offset of the start of memory from the context
+                \\addi t1, t1, %[negative_mem_offset]
+                // store the computed offset in the snapshot
+                \\sh t1, %[i_offset](t0)
+                // increment the pointer where the next snapshot will be stored
+                \\addi t0, t0, %[snapshot_size]
+                // and store it in the cpu
+                \\{[store]s} t0, %[next_offset]({[ctx]t})
                 \\ret
             ,
-                .{ @sizeOf(chip8.Cpu.Snapshot), store_word, cpu_offset + list_offset + @offsetOf(List, "next"), ctx_reg },
-            ));
+                .{ .i = i_reg, .ctx = ctx_reg, .store = store_word },
+            )
+            :
+            : [negative_mem_offset] "i" (@as(isize, -@offsetOf(Context, "memory"))),
+              [i_offset] "i" (@offsetOf(chip8.Cpu.Snapshot, "i")),
+              [snapshot_size] "i" (@sizeOf(chip8.Cpu.Snapshot)),
+              [next_offset] "i" (next_offset),
+        );
     } else {
         asm volatile ("ret");
     }
@@ -484,7 +489,7 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             std.log.scoped(.compiler).warn("unimplemented chip-8 instruction: {x:0>4} ({s})", .{ @intFromEnum(instruction), @tagName(instruction.decode()) });
         },
     }
-    try self.callHost(.snapshot);
+    if (chip8.Cpu.enable_snapshot) try self.callHost(.snapshot);
 }
 
 pub fn epilogue(self: *Compiler) !void {

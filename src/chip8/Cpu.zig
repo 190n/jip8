@@ -61,6 +61,10 @@ snapshots: if (enable_snapshot) struct {
     base: [*]Snapshot,
     next: [*]Snapshot,
     end: [*]Snapshot,
+
+    pub fn slice(self: @This()) []const Snapshot {
+        return self.base[0 .. self.next - self.base];
+    }
 } else void,
 context: Context,
 
