@@ -68,7 +68,10 @@ pub const std_options = std.Options{
     .log_level = .info,
 };
 
-test {
-    // _ = x86_64.Assembler;
-    _ = riscv.Assembler;
+comptime {
+    if (builtin.is_test) {
+        // _ = x86_64.Assembler;
+        _ = riscv.Assembler;
+        _ = riscv.Compiler;
+    }
 }

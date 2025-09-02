@@ -23,6 +23,15 @@ pub const Context = extern struct {
     v: [16]u8,
     /// How many guest instructions are left to be executed
     instructions_remaining: u16 = 0,
+    snapshots: if (enable_snapshot) extern struct {
+        base: [*]Snapshot,
+        next: [*]Snapshot,
+        end: [*]Snapshot,
+
+        pub fn slice(self: @This()) []const Snapshot {
+            return self.base[0 .. self.next - self.base];
+        }
+    } else void,
     did_exit: bool = false,
     memory: [4096]u8,
     canary: switch (builtin.mode) {
@@ -57,15 +66,6 @@ guest_stack: []align(@alignOf(StackFrame)) u8,
 /// If non-null, reason that the CPU stopped executing code
 exit_reason: ?anyerror = null,
 random: std.Random.DefaultPrng,
-snapshots: if (enable_snapshot) struct {
-    base: [*]Snapshot,
-    next: [*]Snapshot,
-    end: [*]Snapshot,
-
-    pub fn slice(self: @This()) []const Snapshot {
-        return self.base[0 .. self.next - self.base];
-    }
-} else void,
 context: Context,
 
 const stack_align = @alignOf(StackFrame);
@@ -97,14 +97,14 @@ pub fn init(
             .i = undefined,
             .v = undefined,
             .memory = undefined,
+            .snapshots = if (enable_snapshot) .{
+                .base = snapshots.ptr,
+                .next = snapshots.ptr,
+                .end = snapshots.ptr + snapshots.len,
+            },
         },
         .guest_stack = guest_stack,
         .random = .init(random_seed),
-        .snapshots = if (enable_snapshot) .{
-            .base = snapshots.ptr,
-            .next = snapshots.ptr,
-            .end = snapshots.ptr + snapshots.len,
-        },
     };
     @memset(&cpu.context.v, 0);
     @memset(&cpu.context.memory, 0);
@@ -117,7 +117,7 @@ pub fn run(self: *Cpu, instructions: u16) anyerror!void {
         return e;
     }
     self.frameLocation().saved_context_pointer = &self.context;
-    self.context.instructions_remaining = instructions;
+    self.context.instructions_remaining = instructions - 1;
     self.context.did_exit = true;
     const retval = coroutine.switchStacks(&self.context);
     std.debug.assert(self.context.canary == .valid);

@@ -29,9 +29,8 @@ fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: 
 
 fn snapshotImpl() callconv(.naked) void {
     if (chip8.Cpu.enable_snapshot) {
-        const List = @FieldType(chip8.Cpu, "snapshots");
-        const cpu_offset = -@as(isize, @offsetOf(chip8.Cpu, "context"));
-        const list_offset: isize = @offsetOf(chip8.Cpu, "snapshots");
+        const List = @FieldType(Context, "snapshots");
+        const list_offset: isize = @offsetOf(Context, "snapshots");
         const load_word: []const u8 = switch (@import("builtin").cpu.arch) {
             .riscv32 => "lw",
             .riscv64 => "ld",
@@ -42,8 +41,8 @@ fn snapshotImpl() callconv(.naked) void {
             .riscv64 => "sd",
             else => unreachable,
         };
-        const next_offset = cpu_offset + list_offset + @offsetOf(List, "next");
-        const end_offset = cpu_offset + list_offset + @offsetOf(List, "end");
+        const next_offset = list_offset + @offsetOf(List, "next");
+        const end_offset = list_offset + @offsetOf(List, "end");
 
         asm volatile (std.fmt.comptimePrint(
                 // load next and end pointers to t0 and t1
@@ -510,4 +509,32 @@ pub fn entrypoint(self: *const Compiler) chip8.Cpu.GuestFunction {
 pub fn deinit(self: *Compiler) !void {
     if (self.code != .writable) _ = try self.code.makeWritable();
     self.code.writable.deinit();
+}
+
+test "run one instruction at a time" {
+    const t = std.testing;
+    const allocator = t.allocator;
+    const stack = try allocator.alignedAlloc(
+        u8,
+        .fromByteUnits(std.heap.page_size_min),
+        4 << 10,
+    );
+    defer allocator.free(stack);
+    var compiler: Compiler = undefined;
+    compiler.init(allocator, @import("builtin").cpu.features);
+    defer compiler.deinit() catch unreachable;
+    try compiler.prologue();
+
+    for (0..16) |i| {
+        try compiler.compile(@enumFromInt(0x6000 | (i << 8) | (i << 4) | i));
+    }
+    try compiler.epilogue();
+    try compiler.makeExecutable();
+    var snapshots: [16]chip8.Cpu.Snapshot = undefined;
+    var cpu = chip8.Cpu.init(stack, compiler.entrypoint(), 0, &snapshots);
+    for (0..16) |i| {
+        cpu.run(1) catch unreachable;
+        try t.expectEqual(0x11 * i, cpu.context.v[i]);
+        try t.expectEqual(i + 1, cpu.context.snapshots.slice().len);
+    }
 }
