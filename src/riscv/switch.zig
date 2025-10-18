@@ -132,8 +132,9 @@ fn switchStacksImpl() callconv(.naked) void {
                     "fs{c} {s}, {}(sp)",
                     .{ float_data_type, register, offset },
                 ));
-            // yes we waste some space if you have only 32-bit floats
-            offset += 8;
+            // yes we waste some space if you have only 32-bit floats on RV64
+            // also TODO this is wrong for RV32+D
+            offset += register_size_bytes;
         }
     }
 

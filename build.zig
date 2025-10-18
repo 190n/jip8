@@ -2,6 +2,7 @@ const std = @import("std");
 
 const RiscvFloat = enum { none, single, double };
 const RiscvBits = enum(u8) { @"32" = 32, @"64" = 64 };
+const TestTarget = struct { RiscvBits, bool, RiscvFloat };
 
 fn resolveRiscvTarget(b: *std.Build, bits: RiscvBits, compressed: bool, float: RiscvFloat) std.Build.ResolvedTarget {
     const cpu = b.fmt(
@@ -26,6 +27,7 @@ pub fn build(b: *std.Build) void {
     const rv32 = b.option(bool, "rv32", "Compile for 32-bit RISC-V instead of 64-bit") orelse false;
     const compressed = !(b.option(bool, "no_c", "Compile without compressed extension") orelse false);
     const float = b.option(RiscvFloat, "float", "Which if any floating-point extension to support") orelse .none;
+    const test_single_target = b.option(bool, "test_single_target", "Run tests for only one target instead of all") orelse false;
     const target = resolveRiscvTarget(b, if (rv32) .@"32" else .@"64", compressed, float);
     const optimize = b.standardOptimizeOption(.{});
 
@@ -53,8 +55,8 @@ pub fn build(b: *std.Build) void {
     }
 
     const test_step = b.step("test", "Run tests");
-
-    for ([_]struct { RiscvBits, bool, RiscvFloat }{
+    const single_target = [_]TestTarget{.{ if (rv32) .@"32" else .@"64", compressed, float }};
+    const all_targets = [_]TestTarget{
         .{ .@"32", false, .none },
         .{ .@"32", false, .single },
         // TODO .{ .@"32", false, .double },
@@ -67,16 +69,24 @@ pub fn build(b: *std.Build) void {
         .{ .@"64", true, .none },
         .{ .@"64", true, .single },
         .{ .@"64", true, .double },
-    }) |opts| {
+    };
+    const test_targets = if (test_single_target) &single_target else &all_targets;
+
+    for (test_targets) |opts| {
         const test_bits, const test_compressed, const test_float = opts;
         const test_target = resolveRiscvTarget(b, test_bits, test_compressed, test_float);
         const tests = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/main.zig"),
                 .target = test_target,
+                .optimize = optimize,
             }),
         });
         const run_tests = b.addRunArtifact(tests);
+        run_tests.step.name = b.fmt("run test -Drv32={any} -Dno_c={any} -Dfloat={t}", .{ test_bits == .@"32", !test_compressed, test_float });
         test_step.dependOn(&run_tests.step);
+        if (test_single_target) {
+            test_step.dependOn(&b.addInstallArtifact(tests, .{}).step);
+        }
     }
 }

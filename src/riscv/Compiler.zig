@@ -374,7 +374,6 @@ fn markNextInstruction(self: *Compiler) Marker {
 
 pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
     const a = &self.assembler;
-    try a.jal(.ra, @intCast(@as(isize, @intCast(self.check_remaining.offset)) - @as(isize, @intCast(self.code.writable.list.items.len))));
     var scope = RegisterScope.init(self);
     // make sure everything we save gets restored by the end
     defer std.debug.assert(scope.isRestored());
@@ -489,6 +488,7 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
         },
     }
     if (chip8.Cpu.enable_snapshot) try self.callHost(.snapshot);
+    try a.jal(.ra, @intCast(@as(isize, @intCast(self.check_remaining.offset)) - @as(isize, @intCast(self.code.writable.list.items.len))));
 }
 
 pub fn epilogue(self: *Compiler) !void {
@@ -533,8 +533,14 @@ test "run one instruction at a time" {
     var snapshots: [16]chip8.Cpu.Snapshot = undefined;
     var cpu = chip8.Cpu.init(stack, compiler.entrypoint(), 0, &snapshots);
     for (0..16) |i| {
+        try t.expectEqual(i, cpu.context.snapshots.slice().len);
         cpu.run(1) catch unreachable;
-        try t.expectEqual(0x11 * i, cpu.context.v[i]);
-        try t.expectEqual(i + 1, cpu.context.snapshots.slice().len);
+        const written_snapshots = cpu.context.snapshots.slice();
+        try t.expectEqual(i + 1, written_snapshots.len);
+        const last = written_snapshots[i];
+        try t.expectEqual(0, last.i);
+        for (last.v, 0..) |vx, j| {
+            try t.expectEqual(if (j <= i) 17 * j else 0, vx);
+        }
     }
 }
