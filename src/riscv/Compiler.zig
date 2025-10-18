@@ -544,3 +544,35 @@ test "run one instruction at a time" {
         }
     }
 }
+
+test "run many instructions" {
+    const t = std.testing;
+    const allocator = t.allocator;
+    const stack = try allocator.alignedAlloc(
+        u8,
+        .fromByteUnits(std.heap.page_size_min),
+        4 << 10,
+    );
+    defer allocator.free(stack);
+    var compiler: Compiler = undefined;
+    compiler.init(allocator, @import("builtin").cpu.features);
+    defer compiler.deinit() catch unreachable;
+    try compiler.prologue();
+
+    for (0..16) |i| {
+        try compiler.compile(@enumFromInt(0x6000 | (i << 8) | (i << 4) | i));
+    }
+    try compiler.epilogue();
+    try compiler.makeExecutable();
+    var snapshots: [16]chip8.Cpu.Snapshot = undefined;
+    var cpu = chip8.Cpu.init(stack, compiler.entrypoint(), 0, &snapshots);
+    try cpu.run(16);
+    const written_snapshots = cpu.context.snapshots.slice();
+    try t.expectEqual(16, written_snapshots.len);
+    for (written_snapshots, 0..) |s, i| {
+        try t.expectEqual(0, s.i);
+        for (s.v, 0..) |vx, j| {
+            try t.expectEqual(if (j <= i) 17 * j else 0, vx);
+        }
+    }
+}
