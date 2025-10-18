@@ -81,6 +81,8 @@ fn snapshotImpl() callconv(.naked) void {
                 \\addi t1, t1, %[negative_mem_offset]
                 // store the computed offset in the snapshot
                 \\sh t1, %[i_offset](t0)
+                // store pc in the snapshot
+                \\sh a2, %[pc_offset](t0)
                 // increment the pointer where the next snapshot will be stored
                 \\addi t0, t0, %[snapshot_size]
                 // and store it in the cpu
@@ -92,6 +94,7 @@ fn snapshotImpl() callconv(.naked) void {
             :
             : [negative_mem_offset] "i" (@as(isize, -@offsetOf(Context, "memory"))),
               [i_offset] "i" (@offsetOf(chip8.Cpu.Snapshot, "i")),
+              [pc_offset] "i" (@offsetOf(chip8.Cpu.Snapshot, "pc")),
               [snapshot_size] "i" (@sizeOf(chip8.Cpu.Snapshot)),
               [next_offset] "i" (next_offset),
         );
@@ -386,9 +389,12 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
     // make sure everything we save gets restored by the end
     defer std.debug.assert(scope.isRestored());
     self.code_offsets[self.pc] = @intCast(self.code.writable.list.items.len);
-    self.pc += 2;
     try a.jal(.ra, @intCast(@as(isize, @intCast(self.check_remaining.offset)) - @as(isize, @intCast(self.code.writable.list.items.len))));
-    if (chip8.Cpu.enable_snapshot) try self.callHost(.snapshot);
+    if (chip8.Cpu.enable_snapshot) {
+        try a.li(.a2, self.pc);
+        try self.callHost(.snapshot);
+    }
+    self.pc += 2;
     switch (instruction.decode()) {
         .set_register => |ins| {
             const vx, const nn = ins;
@@ -554,6 +560,7 @@ test "run one instruction at a time" {
         try t.expectEqual(i + 1, written_snapshots.len);
         const last = written_snapshots[i];
         try t.expectEqual(0, last.i);
+        try t.expectEqual(0x200 + 2 * i, last.pc);
         for (last.v, 0..) |vx, j| {
             // last is state before the ith instruction was executed
             try t.expectEqual(if (j < i) 17 * j else 0, vx);
@@ -588,6 +595,7 @@ test "run many instructions" {
     try t.expectEqual(17, written_snapshots.len);
     for (written_snapshots, 0..) |s, i| {
         try t.expectEqual(0, s.i);
+        try t.expectEqual(0x200 + 2 * i, s.pc);
         for (s.v, 0..) |vx, j| {
             try t.expectEqual(if (j < i) 17 * j else 0, vx);
         }
@@ -619,5 +627,6 @@ test "backwards jump" {
     for (snapshots, 0..) |s, i| {
         try t.expectEqual(0, s.i);
         try t.expectEqual(2 * ((i + 1) / 2), s.v[0]);
+        try t.expectEqual(@as(u12, if (i % 2 == 0) 0x200 else 0x202), s.pc);
     }
 }

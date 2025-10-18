@@ -7,7 +7,7 @@ const StackFrame = coroutine.StackFrame;
 const Cpu = @This();
 
 pub const Snapshot = struct {
-    pc: void,
+    pc: u16,
     i: u16,
     v: [16]u8,
 };
