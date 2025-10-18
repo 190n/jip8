@@ -116,8 +116,11 @@ pub fn run(self: *Cpu, instructions: u16) anyerror!void {
     if (self.exit_reason) |e| {
         return e;
     }
+    if (instructions == 0) {
+        return;
+    }
     self.frameLocation().saved_context_pointer = &self.context;
-    self.context.instructions_remaining = instructions - 1; // cannot run 0 instructions
+    self.context.instructions_remaining = instructions;
     self.context.did_exit = true;
     const retval = coroutine.switchStacks(&self.context);
     std.debug.assert(self.context.canary == .valid);

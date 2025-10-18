@@ -12,6 +12,11 @@ assembler: riscv.Assembler,
 trampolines: *const HostFunctionTrampolines,
 entrypoint_offset: usize,
 check_remaining: Marker,
+/// Location of each compiled instruction
+/// Indexed by guest address / 2
+code_offsets: [2048]u32,
+/// PC for next instruction that will be compiled
+pc: u12,
 
 const host_functions = struct {
     pub const random = &randomImpl;
@@ -283,6 +288,8 @@ pub fn init(self: *Compiler, allocator: std.mem.Allocator, feature_set: std.Targ
         .trampolines = undefined,
         .entrypoint_offset = 0,
         .check_remaining = undefined,
+        .code_offsets = @splat(0),
+        .pc = 0x200,
     };
     self.assembler = .init(&self.code.writable.interface, feature_set);
     self.trampolines = switch (self.assembler.features.bits) {
@@ -316,6 +323,7 @@ pub fn prologue(self: *Compiler) !void {
     try scope.restoreVRegsFromHostCall();
     try scope.restoreI();
     try a.lhu(.s1, @offsetOf(Context, "instructions_remaining"), ctx_reg);
+    try a.addi(.s1, .s1, -1);
     try a.load_register(.ra, 0, .sp);
     try a.addi(.sp, .sp, 16);
     try a.ret();
@@ -377,6 +385,10 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
     var scope = RegisterScope.init(self);
     // make sure everything we save gets restored by the end
     defer std.debug.assert(scope.isRestored());
+    self.code_offsets[self.pc] = @intCast(self.code.writable.list.items.len);
+    self.pc += 2;
+    try a.jal(.ra, @intCast(@as(isize, @intCast(self.check_remaining.offset)) - @as(isize, @intCast(self.code.writable.list.items.len))));
+    if (chip8.Cpu.enable_snapshot) try self.callHost(.snapshot);
     switch (instruction.decode()) {
         .set_register => |ins| {
             const vx, const nn = ins;
@@ -450,6 +462,10 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             // TODO what if this is the last instruction?
             mark_jump_over_trap.insertForwardJumpToNextInstruction(self);
         },
+        .jump => |target| {
+            std.debug.assert(target <= self.pc); // TODO: handle forward jumps
+            try a.j(@intCast(@as(isize, @intCast(self.code_offsets[target])) - @as(isize, @intCast(self.code.writable.list.items.len))));
+        },
 
         .invalid => |opcode| {
             try a.li(.t0, @intFromEnum(opcode));
@@ -458,7 +474,6 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
 
         .clear,
         .ret,
-        .jump,
         .call,
         .skip_if_equal,
         .skip_if_not_equal,
@@ -487,8 +502,6 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             std.log.scoped(.compiler).warn("unimplemented chip-8 instruction: {x:0>4} ({s})", .{ @intFromEnum(instruction), @tagName(instruction.decode()) });
         },
     }
-    if (chip8.Cpu.enable_snapshot) try self.callHost(.snapshot);
-    try a.jal(.ra, @intCast(@as(isize, @intCast(self.check_remaining.offset)) - @as(isize, @intCast(self.code.writable.list.items.len))));
 }
 
 pub fn epilogue(self: *Compiler) !void {
@@ -528,11 +541,13 @@ test "run one instruction at a time" {
     for (0..16) |i| {
         try compiler.compile(@enumFromInt(0x6000 | (i << 8) | (i << 4) | i));
     }
+    // 2 nop copium
+    try compiler.compile(@enumFromInt(0x1220));
     try compiler.epilogue();
     try compiler.makeExecutable();
-    var snapshots: [16]chip8.Cpu.Snapshot = undefined;
+    var snapshots: [17]chip8.Cpu.Snapshot = undefined;
     var cpu = chip8.Cpu.init(stack, compiler.entrypoint(), 0, &snapshots);
-    for (0..16) |i| {
+    for (0..17) |i| {
         try t.expectEqual(i, cpu.context.snapshots.slice().len);
         cpu.run(1) catch unreachable;
         const written_snapshots = cpu.context.snapshots.slice();
@@ -540,7 +555,8 @@ test "run one instruction at a time" {
         const last = written_snapshots[i];
         try t.expectEqual(0, last.i);
         for (last.v, 0..) |vx, j| {
-            try t.expectEqual(if (j <= i) 17 * j else 0, vx);
+            // last is state before the ith instruction was executed
+            try t.expectEqual(if (j < i) 17 * j else 0, vx);
         }
     }
 }
@@ -562,17 +578,46 @@ test "run many instructions" {
     for (0..16) |i| {
         try compiler.compile(@enumFromInt(0x6000 | (i << 8) | (i << 4) | i));
     }
+    try compiler.compile(@enumFromInt(0x1220));
     try compiler.epilogue();
     try compiler.makeExecutable();
-    var snapshots: [16]chip8.Cpu.Snapshot = undefined;
+    var snapshots: [17]chip8.Cpu.Snapshot = undefined;
     var cpu = chip8.Cpu.init(stack, compiler.entrypoint(), 0, &snapshots);
-    try cpu.run(16);
+    try cpu.run(17);
     const written_snapshots = cpu.context.snapshots.slice();
-    try t.expectEqual(16, written_snapshots.len);
+    try t.expectEqual(17, written_snapshots.len);
     for (written_snapshots, 0..) |s, i| {
         try t.expectEqual(0, s.i);
         for (s.v, 0..) |vx, j| {
-            try t.expectEqual(if (j <= i) 17 * j else 0, vx);
+            try t.expectEqual(if (j < i) 17 * j else 0, vx);
         }
+    }
+}
+
+test "backwards jump" {
+    const t = std.testing;
+    const allocator = t.allocator;
+    const stack = try allocator.alignedAlloc(
+        u8,
+        .fromByteUnits(std.heap.page_size_min),
+        4 << 10,
+    );
+    defer allocator.free(stack);
+    var compiler: Compiler = undefined;
+    compiler.init(allocator, @import("builtin").cpu.features);
+    defer compiler.deinit() catch unreachable;
+    try compiler.prologue();
+
+    try compiler.compile(@enumFromInt(0x7002));
+    try compiler.compile(@enumFromInt(0x1200));
+
+    try compiler.epilogue();
+    try compiler.makeExecutable();
+    var snapshots: [10]chip8.Cpu.Snapshot = undefined;
+    var cpu = chip8.Cpu.init(stack, compiler.entrypoint(), 0, &snapshots);
+    try cpu.run(10);
+    for (snapshots, 0..) |s, i| {
+        try t.expectEqual(0, s.i);
+        try t.expectEqual(2 * ((i + 1) / 2), s.v[0]);
     }
 }
