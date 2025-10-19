@@ -20,6 +20,8 @@ pub const Context = extern struct {
     /// host code)
     stack_pointer: *anyopaque,
     i: *u8,
+    /// Saved return address for guest subroutine calls
+    guest_ra: *const anyopaque,
     v: [16]u8,
     /// How many guest instructions are left to be executed
     instructions_remaining: u16 = 0,
@@ -95,6 +97,7 @@ pub fn init(
         .context = .{
             .stack_pointer = frameLocationFromStack(guest_stack),
             .i = undefined,
+            .guest_ra = undefined,
             .v = undefined,
             .memory = undefined,
             .snapshots = if (enable_snapshot) .{

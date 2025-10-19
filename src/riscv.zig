@@ -89,6 +89,7 @@ pub const Register = enum(u5) {
 pub const Opcode = enum(u7) {
     load = 0b00_000_11,
     load_fp = 0b00_001_11,
+    custom_forward_chip8_jump = 0b00_010_11,
     misc_mem = 0b00_011_11,
     op_imm = 0b00_100_11,
     auipc = 0b00_101_11,
@@ -161,6 +162,16 @@ pub const Instruction = packed union {
         rs2: Register,
         imm_10_5: u6,
         imm_12: u1,
+
+        /// Edit the B-immediate bits of this instruction to be imm. The rest of the instruction is unchanged.
+        pub fn setOffset(self: *align(2) @This(), imm: i13) void {
+            std.debug.assert(@rem(imm, 2) == 0);
+            const uimm: u13 = @bitCast(imm);
+            self.imm_4_1 = @truncate(uimm >> 1);
+            self.imm_10_5 = @truncate(uimm >> 5);
+            self.imm_11 = @truncate(uimm >> 11);
+            self.imm_12 = @truncate(uimm >> 12);
+        }
     },
     u: packed struct(u32) {
         opcode: Opcode,
@@ -174,6 +185,31 @@ pub const Instruction = packed union {
         imm_11: u1,
         imm_10_1: u10,
         imm_20: u1,
+
+        /// Edit the J-immediate bits of this instruction to be imm. The rest of the instruction is unchanged.
+        pub fn setOffset(self: *align(2) @This(), imm: i21) void {
+            std.debug.assert(@rem(imm, 2) == 0);
+            const uimm: u21 = @bitCast(imm);
+            self.imm_10_1 = @truncate(uimm >> 1);
+            self.imm_11 = @truncate(uimm >> 11);
+            self.imm_19_12 = @truncate(uimm >> 12);
+            self.imm_20 = @truncate(uimm >> 20);
+        }
+
+        pub fn offset(self: @This()) i21 {
+            var unsigned: u21 = 0;
+            unsigned |= @as(u21, self.imm_10_1) << 1;
+            unsigned |= @as(u21, self.imm_11) << 11;
+            unsigned |= @as(u21, self.imm_19_12) << 12;
+            unsigned |= @as(u21, self.imm_20) << 20;
+            return @bitCast(unsigned);
+        }
+    },
+    custom_forward_chip8_jump: packed struct(u32) {
+        opcode: Opcode = .custom_forward_chip8_jump,
+        target: u12,
+        kind: enum(u1) { jump, call },
+        pad: u12 = 0,
     },
 
     pub const Funct3Branch = enum(u3) {
@@ -277,16 +313,6 @@ pub const Instruction = packed union {
         } };
     }
 
-    /// Edit the B-immediate bits of this instruction to be imm. The rest of the instruction is unchanged.
-    pub fn assignB(self: *align(2) Instruction, imm: i13) void {
-        std.debug.assert(@rem(imm, 2) == 0);
-        const uimm: u13 = @bitCast(imm);
-        self.b.imm_4_1 = @truncate(uimm >> 1);
-        self.b.imm_10_5 = @truncate(uimm >> 5);
-        self.b.imm_11 = @truncate(uimm >> 11);
-        self.b.imm_12 = @truncate(uimm >> 12);
-    }
-
     pub fn makeJ(opcode: Opcode, rd: Register, imm: u21) Instruction {
         std.debug.assert(imm % 2 == 0);
         return .{ .j = .{
@@ -297,16 +323,6 @@ pub const Instruction = packed union {
             .imm_10_1 = @truncate(imm >> 1),
             .imm_20 = @truncate(imm >> 20),
         } };
-    }
-
-    /// Edit the J-immediate bits of this instruction to be imm. The rest of the instruction is unchanged.
-    pub fn assignJ(self: *align(2) Instruction, imm: i21) void {
-        std.debug.assert(@rem(imm, 2) == 0);
-        const uimm: u21 = @bitCast(imm);
-        self.j.imm_10_1 = @truncate(uimm >> 1);
-        self.j.imm_11 = @truncate(uimm >> 11);
-        self.j.imm_19_12 = @truncate(uimm >> 12);
-        self.j.imm_20 = @truncate(uimm >> 20);
     }
 
     pub fn any(self: Instruction) AnyInstruction {
@@ -324,6 +340,11 @@ pub const AnyInstruction = union(enum) {
             .rvc => |i| try writer.writeInt(u16, @bitCast(i), .little),
         }
     }
+};
+
+pub const AnyInstructionPtr = union(enum) {
+    rv: *align(2) Instruction,
+    rvc: *Instruction.Compressed,
 };
 
 pub const FloatWidth = enum {
@@ -348,3 +369,39 @@ pub const Bits = enum(u1) {
         return self.bits() / 8;
     }
 };
+
+pub const InstructionIterator = struct {
+    bytes: []u8,
+
+    pub fn init(bytes: []u8) InstructionIterator {
+        return .{ .bytes = bytes };
+    }
+
+    pub fn next(self: *InstructionIterator) ?AnyInstructionPtr {
+        if (self.bytes.len == 0) {
+            return null;
+        }
+        const halfword = std.mem.readInt(u16, self.bytes[0..2], .little);
+        switch (halfword & 0b11) {
+            0b11 => {
+                defer self.bytes = self.bytes[4..];
+                return .{ .rv = @ptrCast(@alignCast(&self.bytes[0])) };
+            },
+            else => {
+                defer self.bytes = self.bytes[2..];
+                return .{ .rvc = @ptrCast(@alignCast(&self.bytes[0])) };
+            },
+        }
+    }
+};
+
+test InstructionIterator {
+    var bytes = [_]u8{ 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00 };
+    var iter: InstructionIterator = .init(&bytes);
+    const t = std.testing;
+    try t.expectEqual(0x00000003, @as(u32, @bitCast(iter.next().?.rv.*)));
+    try t.expectEqual(0x0000, @as(u16, @bitCast(iter.next().?.rvc.*)));
+    try t.expectEqual(0x0001, @as(u16, @bitCast(iter.next().?.rvc.*)));
+    try t.expectEqual(0x0002, @as(u16, @bitCast(iter.next().?.rvc.*)));
+    try t.expectEqual(null, iter.next());
+}

@@ -487,7 +487,7 @@ pub fn sb(self: *Assembler, src: Register, offset: i12, base: Register) !void {
 
 /// lw for 32-bit
 /// ld for 64-bit
-pub fn load_register(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
+pub fn loadRegister(self: *Assembler, dst: Register, offset: i12, base: Register) !void {
     return self.load(
         switch (self.features.bits) {
             .@"32" => .word,
@@ -501,7 +501,7 @@ pub fn load_register(self: *Assembler, dst: Register, offset: i12, base: Registe
 
 /// sw for 32-bit
 /// sd for 64-bit
-pub fn store_register(self: *Assembler, src: Register, offset: i12, base: Register) !void {
+pub fn storeRegister(self: *Assembler, src: Register, offset: i12, base: Register) !void {
     return self.store(
         switch (self.features.bits) {
             .@"32" => .word,
