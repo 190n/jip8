@@ -207,9 +207,14 @@ pub const Instruction = packed union {
     },
     custom_forward_chip8_jump: packed struct(u32) {
         opcode: Opcode = .custom_forward_chip8_jump,
+        /// CHIP-8 address
         target: u12,
-        kind: enum(u1) { jump, call },
-        pad: u12 = 0,
+        kind: enum(u2) { jump, call, beq, bne },
+        /// Only meaningful if kind == .beq or kind == .bne
+        rs1: Register = .zero,
+        /// Only meaningful if kind == .beq or kind == .bne
+        rs2: Register = .zero,
+        pad: u1 = 0,
     },
 
     pub const Funct3Branch = enum(u3) {

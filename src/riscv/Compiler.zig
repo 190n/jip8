@@ -408,7 +408,7 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
         try a.li(.a2, self.pc);
         try self.callHost(.snapshot);
     }
-    self.pc += 2;
+    defer self.pc += 2;
     switch (instruction.decode()) {
         .set_register => |ins| {
             const vx, const nn = ins;
@@ -531,6 +531,42 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
         .ret => {
             try a.jr(guest_ra, 0);
         },
+        .skip_if_equal => |ins| {
+            const vx, const imm = ins;
+            const compare_against: riscv.Register = if (imm == 0) .zero else reg: {
+                const temp = scope.tempReg();
+                try a.li(temp, imm);
+                break :reg temp;
+            };
+            try a.writer.writeInt(
+                u32,
+                @bitCast(riscv.Instruction{ .custom_forward_chip8_jump = .{
+                    .target = self.pc + 4,
+                    .kind = .beq,
+                    .rs1 = hostRegFromV(vx),
+                    .rs2 = compare_against,
+                } }),
+                .little,
+            );
+        },
+        .skip_if_not_equal => |ins| {
+            const vx, const imm = ins;
+            const compare_against: riscv.Register = if (imm == 0) .zero else reg: {
+                const temp = scope.tempReg();
+                try a.li(temp, imm);
+                break :reg temp;
+            };
+            try a.writer.writeInt(
+                u32,
+                @bitCast(riscv.Instruction{ .custom_forward_chip8_jump = .{
+                    .target = self.pc + 4,
+                    .kind = .bne,
+                    .rs1 = hostRegFromV(vx),
+                    .rs2 = compare_against,
+                } }),
+                .little,
+            );
+        },
 
         .invalid => |opcode| {
             try a.li(temp_regs[0], @intFromEnum(opcode));
@@ -538,8 +574,6 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
         },
 
         .clear,
-        .skip_if_equal,
-        .skip_if_not_equal,
         .skip_if_registers_equal,
         .bitwise_or,
         .bitwise_and,
@@ -581,10 +615,20 @@ pub fn makeExecutable(self: *Compiler) !void {
             const ins = ins_ptr.rv.custom_forward_chip8_jump;
             const origin = @as([*]u8, @ptrCast(ins_ptr.rv)) - self.code.writable.list.items.ptr;
             const host_target = self.code_offsets[ins.target];
-            ins_ptr.rv.* = .makeJ(.jal, switch (ins.kind) {
-                .jump => .zero,
-                .call => guest_ra,
-            }, @intCast(host_target - origin));
+            ins_ptr.rv.* = switch (ins.kind) {
+                .jump, .call => .makeJ(
+                    .jal,
+                    if (ins.kind == .jump) .zero else guest_ra,
+                    @intCast(host_target - origin),
+                ),
+                .beq, .bne => .makeB(
+                    .branch,
+                    if (ins.kind == .beq) .beq else .bne,
+                    ins.rs1,
+                    ins.rs2,
+                    @intCast(host_target - origin),
+                ),
+            };
         }
     }
     _ = try self.code.makeExecutable(&.{});
@@ -759,4 +803,41 @@ test "call" {
     try t.expectEqual(0x204, snapshots[3].pc);
     try t.expectEqual(1, snapshots[3].v[0]);
     try t.expectEqual(0x208, snapshots[4].pc);
+}
+
+test "loop" {
+    const t = std.testing;
+    const allocator = t.allocator;
+    const stack = try allocator.alignedAlloc(
+        u8,
+        .fromByteUnits(std.heap.page_size_min),
+        4 << 10,
+    );
+    defer allocator.free(stack);
+    var compiler: Compiler = undefined;
+    compiler.init(allocator, @import("builtin").cpu.features);
+    defer compiler.deinit() catch unreachable;
+    try compiler.prologue();
+
+    try compiler.compile(@enumFromInt(0x6005));
+    try compiler.compile(@enumFromInt(0x7103));
+    try compiler.compile(@enumFromInt(0x70ff));
+    try compiler.compile(@enumFromInt(0x3000));
+    try compiler.compile(@enumFromInt(0x1202));
+    try compiler.compile(@enumFromInt(0x120a));
+
+    try compiler.epilogue();
+    try compiler.makeExecutable();
+    var snapshots: [21]chip8.Cpu.Snapshot = undefined;
+    var cpu = chip8.Cpu.init(stack, compiler.entrypoint(), 0, &snapshots);
+    try cpu.run(21);
+    for (1..4) |i| {
+        try t.expectEqual(0x206, snapshots[4 * i + 3].pc);
+        // did not skip
+        try t.expectEqual(0x208, snapshots[4 * i + 4].pc);
+    }
+    try t.expectEqual(0x206, snapshots[19].pc);
+    // skipped
+    try t.expectEqual(0x20a, snapshots[20].pc);
+    try t.expectEqual(15, snapshots[20].v[1]);
 }
