@@ -29,6 +29,7 @@ const host_functions = struct {
     pub const random = &randomImpl;
     pub const yield = &chip8.Cpu.Context.yield;
     pub const snapshot = &snapshotImpl;
+    pub const draw = &drawImpl;
 };
 
 fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: u8 } {
@@ -108,6 +109,33 @@ fn snapshotImpl() callconv(.naked) void {
     } else {
         asm volatile ("ret");
     }
+}
+
+fn drawImpl(
+    context: *Context,
+    i: [*]const u8,
+    x: u8,
+    y: u8,
+    rows: u8,
+) callconv(.c) extern struct {
+    context: *Context,
+    i: [*]const u8,
+} {
+    // TODO bounds check (or in jit?)
+    var intersect: u8 = 0;
+    for (0..@min(rows, 32 - y)) |row| {
+        const left = @bitReverse(i[row]) << @truncate(x % 8);
+        const right: u8 = @truncate(@as(u16, @bitReverse(i[row]) >> @truncate(8 - (x % 8))));
+        const index = (64 * (y + row) + x) / 8;
+        intersect |= (context.screen[index] & left);
+        context.screen[index] ^= left;
+        if (x % 8 != 0 and x < 56) {
+            intersect |= (context.screen[index + 1] & right);
+            context.screen[index + 1] ^= right;
+        }
+    }
+    context.v[0xf] = @intFromBool(intersect != 0);
+    return .{ .context = context, .i = i };
 }
 
 const HostFunctionTrampolines = struct {
@@ -272,6 +300,8 @@ const RegisterScope = struct {
     }
 
     pub fn restoreVRegsFromHostCall(self: *RegisterScope) !void {
+        // some instructions rely on host calls overwriting VF in the context
+        comptime std.debug.assert(!hostRegFromV(0xf).isCalleeSaved());
         for (0..16) |vx| {
             const host = hostRegFromV(@intCast(vx));
             if (!host.isCalleeSaved()) {
@@ -567,13 +597,60 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
                 .little,
             );
         },
+        .draw => |ins| {
+            const vx, const vy, const rows = ins;
+            // load coordinates and row count as function arguments
+            // coordinates wrap around to screen space
+            try a.andi(.a2, hostRegFromV(vx), 0x3f);
+            try a.andi(.a3, hostRegFromV(vy), 0x1f);
+            try a.li(.a4, rows);
+            try scope.saveVRegsForHostCall();
+            try scope.saveRaForHostCall();
+            try self.callHost(.draw);
+            try scope.restoreRa();
+            try scope.restoreVRegsFromHostCall();
+        },
+        .read_dt => |vx| {
+            try a.lbu(hostRegFromV(vx), @offsetOf(Context, "dt"), ctx_reg);
+        },
+        .set_dt => |vx| {
+            try a.sb(hostRegFromV(vx), @offsetOf(Context, "dt"), ctx_reg);
+        },
+        .sub_registers_reverse => |ins| {
+            const vx, const vy = ins;
+            // set result and then set VF
+            try a.sub(hostRegFromV(vx), hostRegFromV(vy), hostRegFromV(vx));
+            // set VF to whether borrow occurred
+            try a.slti(hostRegFromV(0xf), hostRegFromV(vx), 0);
+            // wrap the output to 8-bit range, unless the output is VF in which case
+            // we just set it to only 0 or 1
+            if (vx != 0xf) {
+                try a.andi(hostRegFromV(vx), hostRegFromV(vx), 0xff);
+            }
+            // flip VF so that it is 0 for borrow instead of 1 for borrow
+            try a.xori(hostRegFromV(0xf), hostRegFromV(0xf), 1);
+        },
+        .increment_i => |vx| {
+            // TODO bounds check
+            try a.add(i_reg, i_reg, hostRegFromV(vx));
+        },
+        .clear => {
+            const counter = scope.tempReg();
+            const pointer = scope.tempReg();
+            try a.li(counter, @divExact(@sizeOf(@FieldType(Context, "screen")), @as(u16, a.features.bits.bytes())));
+            try a.addi(pointer, ctx_reg, @offsetOf(Context, "screen"));
+            const loop = self.markNextInstruction();
+            try a.storeRegister(.zero, 0, pointer);
+            try a.addi(counter, counter, -1);
+            try a.addi(pointer, pointer, a.features.bits.bytes());
+            try a.bne(counter, .zero, @intCast(@as(isize, @intCast(loop.offset)) - @as(isize, @intCast(self.code.writable.list.items.len))));
+        },
 
         .invalid => |opcode| {
             try a.li(temp_regs[0], @intFromEnum(opcode));
             try a.ebreak();
         },
 
-        .clear,
         .skip_if_registers_equal,
         .bitwise_or,
         .bitwise_and,
@@ -581,18 +658,13 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
         .add_registers,
         .sub_registers,
         .shift_right,
-        .sub_registers_reverse,
         .shift_left,
         .skip_if_registers_not_equal,
         .jump_v0,
-        .draw,
         .skip_if_pressed,
         .skip_if_not_pressed,
-        .read_dt,
         .wait_for_key,
-        .set_dt,
         .set_st,
-        .increment_i,
         .set_i_to_font,
         .store_bcd,
         => {

@@ -197,6 +197,26 @@ pub fn andi(self: *Assembler, rd: Register, rs1: Register, value: i12) !void {
     } });
 }
 
+pub fn slti(self: *Assembler, rd: Register, rs1: Register, value: i12) !void {
+    try self.emit(Instruction{ .i = .{
+        .opcode = .op_imm,
+        .funct3 = 0b010,
+        .rd = rd,
+        .rs1 = rs1,
+        .imm = @bitCast(value),
+    } });
+}
+
+pub fn xori(self: *Assembler, rd: Register, rs1: Register, value: i12) !void {
+    try self.emit(Instruction{ .i = .{
+        .opcode = .op_imm,
+        .funct3 = 0b100,
+        .rd = rd,
+        .rs1 = rs1,
+        .imm = @bitCast(value),
+    } });
+}
+
 pub fn lui(self: *Assembler, rd: Register, value: u20) !void {
     try self.emit(Instruction{ .u = .{
         .opcode = .lui,
@@ -256,6 +276,18 @@ pub fn add(self: *Assembler, rd: Register, rs1: Register, rs2: Register) !void {
         .rs1 = rs1,
         .rs2 = rs2,
         .funct7 = 0b0000000,
+    } });
+}
+
+pub fn sub(self: *Assembler, rd: Register, rs1: Register, rs2: Register) !void {
+    // TODO try c.sub
+    try self.emit(Instruction{ .r = .{
+        .opcode = .op,
+        .funct3 = 0b000,
+        .rd = rd,
+        .rs1 = rs1,
+        .rs2 = rs2,
+        .funct7 = 0b0100000,
     } });
 }
 

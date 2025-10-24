@@ -23,6 +23,8 @@ pub const Context = extern struct {
     /// Saved return address for guest subroutine calls
     guest_ra: *const anyopaque,
     v: [16]u8,
+    dt: u8 = 0,
+    st: u8 = 0,
     /// How many guest instructions are left to be executed
     instructions_remaining: u16 = 0,
     snapshots: if (enable_snapshot) extern struct {
@@ -34,6 +36,7 @@ pub const Context = extern struct {
             return self.base[0 .. self.next - self.base];
         }
     } else void,
+    screen: [64 * 32 / 8]u8 align(@alignOf(usize)),
     did_exit: bool = false,
     memory: [4096]u8,
     canary: switch (builtin.mode) {
@@ -100,6 +103,7 @@ pub fn init(
             .guest_ra = undefined,
             .v = undefined,
             .memory = undefined,
+            .screen = undefined,
             .snapshots = if (enable_snapshot) .{
                 .base = snapshots.ptr,
                 .next = snapshots.ptr,
@@ -111,6 +115,7 @@ pub fn init(
     };
     @memset(&cpu.context.v, 0);
     @memset(&cpu.context.memory, 0);
+    @memset(&cpu.context.screen, 0);
     cpu.frameLocation().* = StackFrame.init(code);
     return cpu;
 }
