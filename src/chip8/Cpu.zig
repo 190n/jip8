@@ -46,7 +46,7 @@ pub const Context = extern struct {
 
     pub fn yield(self: *Context) callconv(.c) *Context {
         self.did_exit = false;
-        std.log.info(
+        std.log.debug(
             "V = {{" ++ (" {x:0>2}" ** 16) ++ " }}",
             .{
                 self.v[0x0], self.v[0x1], self.v[0x2], self.v[0x3],
@@ -55,7 +55,7 @@ pub const Context = extern struct {
                 self.v[0xc], self.v[0xd], self.v[0xe], self.v[0xf],
             },
         );
-        std.log.info("I = {x}", .{self.guestI()});
+        std.log.debug("I = {x}", .{self.guestI()});
         _ = coroutine.switchStacks(self);
         return self;
     }

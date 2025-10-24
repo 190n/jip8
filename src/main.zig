@@ -50,7 +50,6 @@ pub fn main() !void {
     var i: usize = 0;
     while (i < program.len) : (i += 2) {
         const ins: chip8.Instruction = @enumFromInt(std.mem.readInt(u16, program[i..][0..2], .big));
-        std.log.info("{x}", .{@intFromEnum(ins)});
         if (ins.decode() == .invalid) break;
         try compiler.compile(ins);
     }
@@ -69,7 +68,7 @@ pub fn main() !void {
             cpu.context.dt -|= 1;
             cpu.context.st -|= 1;
             // print screen
-            try stdout.writeAll("\x1b[2J\x1b[H");
+            try stdout.writeAll("\x1b[H\x1b[2J\x1b[3J");
             for (0..16) |line| {
                 const y = 2 * line;
                 for (0..64) |x| {
