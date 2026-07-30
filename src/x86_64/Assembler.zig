@@ -13,7 +13,7 @@ const GenericAssembler = @compileError("don't reference");
 
 code: union(enum) {
     dynamic: GenericAssembler,
-    fixed: std.io.FixedBufferStream([]u8),
+    fixed: std.Io.FixedBufferStream([]u8),
 },
 
 pub fn init(allocator: std.mem.Allocator) Assembler {
@@ -36,7 +36,7 @@ pub fn entrypoint(self: *const Assembler, comptime T: type, offset: usize) T {
 }
 
 pub fn atOffset(self: *Assembler, index: usize) Assembler {
-    return .{ .code = .{ .fixed = std.io.fixedBufferStream(self.code.dynamic.code.items[index..]) } };
+    return .{ .code = .{ .fixed = std.Io.fixedBufferStream(self.code.dynamic.code.items[index..]) } };
 }
 
 /// Returns all the code added to this Assembler since its creation as a slice

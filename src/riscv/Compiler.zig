@@ -188,7 +188,7 @@ fn makeRiscvTrampolines(
     comptime compressed: bool,
 ) !HostFunctionTrampolines {
     var code: [4096]u8 = undefined;
-    var writer: std.io.Writer = .fixed(&code);
+    var writer: std.Io.Writer = .fixed(&code);
     var assembler = riscv.Assembler.init(
         &writer,
         std.Target.riscv.featureSet(switch (bits) {

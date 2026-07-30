@@ -29,10 +29,10 @@ pub const Features = packed struct {
 };
 
 /// TODO: delete?
-writer: *std.io.Writer,
+writer: *std.Io.Writer,
 features: Features,
 
-pub fn init(writer: *std.io.Writer, feature_set: std.Target.Cpu.Feature.Set) Assembler {
+pub fn init(writer: *std.Io.Writer, feature_set: std.Target.Cpu.Feature.Set) Assembler {
     return .{
         .writer = writer,
         .features = .from(feature_set),
@@ -52,7 +52,7 @@ pub fn assemble(comptime instructions: anytype) []const u8 {
     for (instructions) |i| {
         const name, const args = i;
         var single_instruction_buf: [4]u8 = undefined;
-        var writer: std.io.Writer = .fixed(&single_instruction_buf);
+        var writer: std.Io.Writer = .fixed(&single_instruction_buf);
         var assembler: Assembler = .init(&writer, .{ .zca = true });
         @call(.auto, @field(Assembler, @tagName(name)), .{&assembler} ++ args) catch unreachable;
         code = code ++ assembler.slice();
@@ -60,10 +60,7 @@ pub fn assemble(comptime instructions: anytype) []const u8 {
     return code;
 }
 
-fn permute(n: anytype, comptime order: []const i32) @Type(.{ .int = .{
-    .signedness = .unsigned,
-    .bits = order.len,
-} }) {
+fn permute(n: anytype, comptime order: []const i32) @Int(.unsigned, order.len) {
     comptime for (order) |x| {
         assert(x >= 0);
     };

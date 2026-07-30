@@ -47,18 +47,23 @@ pub const Register = enum(u5) {
         };
     }
 
-    pub const NonZero = @Type(.{
-        .@"enum" = .{
-            .tag_type = u5,
-            .decls = &.{},
-            .is_exhaustive = true,
-            .fields = fields: {
-                const reg_fields = @typeInfo(Register).@"enum".fields;
-                std.debug.assert(reg_fields[0].value == 0);
-                break :fields reg_fields[1..];
-            },
-        },
-    });
+    pub const NonZero = E: {
+        const reg_fields = @typeInfo(Register).@"enum".fields;
+        std.debug.assert(reg_fields[0].value == 0);
+        var names: [31][]const u8 = undefined;
+        var values: [31]u5 = undefined;
+        for (&names, &values, reg_fields[1..], 1..) |*name_ptr, *value_ptr, field, value| {
+            name_ptr.* = field.name;
+            value_ptr.* = value;
+        }
+
+        break :E @Enum(
+            u5,
+            .exhaustive,
+            &names,
+            &values,
+        );
+    };
 
     pub const Compressed = enum(u3) { s0, s1, a0, a1, a2, a3, a4, a5 };
 
@@ -339,7 +344,7 @@ pub const AnyInstruction = union(enum) {
     rv: Instruction,
     rvc: Instruction.Compressed,
 
-    pub fn writeTo(self: AnyInstruction, writer: *std.io.Writer) !void {
+    pub fn writeTo(self: AnyInstruction, writer: *std.Io.Writer) !void {
         switch (self) {
             .rv => |i| try writer.writeInt(u32, @bitCast(i), .little),
             .rvc => |i| try writer.writeInt(u16, @bitCast(i), .little),

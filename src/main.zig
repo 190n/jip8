@@ -9,38 +9,28 @@ const chip8 = @import("./chip8.zig");
 
 const Compiler = riscv.Compiler;
 
-var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-
-pub fn main() !void {
-    const allocator = switch (builtin.mode) {
-        .Debug => debug_allocator.allocator(),
-        else => std.heap.smp_allocator,
-    };
-    defer if (builtin.mode == .Debug) std.debug.assert(debug_allocator.deinit() == .ok);
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+pub fn main(init: std.process.Init) !void {
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len != 2) {
         std.log.err("usage: {s} <path to ROM>", .{args[0]});
         return error.BadUsage;
     }
 
     var write_buffer: [1024]u8 = undefined;
-    var stdout_file = std.fs.File.stdout().writer(&write_buffer);
+    var stdout_file = std.Io.File.stdout().writer(init.io, &write_buffer);
     const stdout = &stdout_file.interface;
 
     var program_buf: [4096 - 0x200]u8 = undefined;
-    const program = try std.fs.cwd().readFile(args[1], &program_buf);
+    const program = try std.Io.Dir.cwd().readFile(init.io, args[1], &program_buf);
 
-    const stack = try allocator.alignedAlloc(
+    const stack = try init.arena.allocator().alignedAlloc(
         u8,
         .fromByteUnits(std.heap.page_size_min),
         16 << 10,
     );
-    defer allocator.free(stack);
 
     var compiler: Compiler = undefined;
-    compiler.init(allocator, if (builtin.cpu.arch.isRISCV())
+    compiler.init(init.gpa, if (builtin.cpu.arch.isRISCV())
         builtin.cpu.features
     else
         std.Target.riscv.featureSet(&.{ .@"64bit", .c }));
@@ -57,7 +47,8 @@ pub fn main() !void {
 
     if (comptime builtin.cpu.arch.isRISCV()) {
         try compiler.makeExecutable();
-        const seed: u64 = @truncate(@as(u128, @bitCast(std.time.nanoTimestamp())));
+        var seed: u64 = undefined;
+        init.io.random(@ptrCast(&seed));
         var cpu = Cpu.init(stack, compiler.entrypoint(), seed, {});
         @memcpy(cpu.context.memory[0x200..][0..program.len], program);
 
@@ -85,7 +76,7 @@ pub fn main() !void {
                 try stdout.writeByte('\n');
             }
             try stdout.flush();
-            std.Thread.sleep(std.time.ns_per_s / 60);
+            try init.io.sleep(.fromNanoseconds(std.time.ns_per_s / 60), .awake);
         }
     } else {
         const code = compiler.code_buffer.writable.list.items;

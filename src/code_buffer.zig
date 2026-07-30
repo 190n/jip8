@@ -3,7 +3,7 @@
 pub const Writable = struct {
     list: std.ArrayListAlignedUnmanaged(u8, .fromByteUnits(std.heap.page_size_min)),
     allocator: std.mem.Allocator,
-    interface: std.io.Writer = .{
+    interface: std.Io.Writer = .{
         .vtable = &.{ .drain = drain },
         // writes go to memory so buffering is unnecessary
         .buffer = &.{},
@@ -31,7 +31,7 @@ pub const Writable = struct {
             }
         }
 
-        try std.posix.mprotect(self.list.allocatedSlice(), std.posix.PROT.READ | std.posix.PROT.EXEC);
+        try std.process.protectMemory(self.list.allocatedSlice(), .{ .read = true, .execute = true });
         return .{
             .code = self.list.items,
             .allocator = self.allocator,
@@ -44,7 +44,7 @@ pub const Writable = struct {
         self.* = undefined;
     }
 
-    fn drain(w: *std.io.Writer, data: []const []const u8, splat: usize) std.io.Writer.Error!usize {
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
         const self: *Writable = @fieldParentPtr("interface", w);
         const new_bytes = blk: {
             var sum: usize = 0;
@@ -53,6 +53,7 @@ pub const Writable = struct {
         } +
             splat * data[data.len - 1].len;
         const min_capacity = self.list.items.len + new_bytes;
+        // TODO: grow exponentially
         const new_capacity = std.mem.alignForward(usize, min_capacity, std.heap.page_size_min);
         self.list.ensureTotalCapacityPrecise(self.allocator, new_capacity) catch return error.WriteFailed;
         for (data[0 .. data.len - 1]) |chunk| self.list.appendSliceAssumeCapacity(chunk);
@@ -72,7 +73,7 @@ pub const Executable = struct {
     /// non-executable again
     pub fn toWritable(self: Executable) !Writable {
         const allocated_slice: []align(std.heap.page_size_min) u8 = @constCast(self.code.ptr[0..self.capacity]);
-        try std.posix.mprotect(allocated_slice, std.posix.PROT.READ | std.posix.PROT.WRITE);
+        try std.process.protectMemory(allocated_slice, .{ .read = true, .write = true });
         return .{
             .list = .{
                 .items = @constCast(self.code),
@@ -84,7 +85,7 @@ pub const Executable = struct {
 
     pub fn entrypoint(self: *const Executable, comptime T: type, offset: usize) T {
         comptime std.debug.assert(@typeInfo(@typeInfo(T).pointer.child) == .@"fn");
-        return @alignCast(@ptrCast(&self.code[offset]));
+        return @ptrCast(@alignCast(&self.code[offset]));
     }
 };
 
