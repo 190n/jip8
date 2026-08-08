@@ -996,4 +996,5 @@ test "writes" {
     try t.expectEqual(1, cpu.context.memory[0xffc]);
     try t.expectEqual(2, cpu.context.memory[0xffd]);
     try t.expectEqual(3, cpu.context.memory[0xffe]);
+    try t.expectEqual(0xfff, @intFromPtr(cpu.context.i) - @intFromPtr(&cpu.context.memory[0]));
 }
