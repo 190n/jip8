@@ -18,10 +18,14 @@ code_offsets: [2048]u32,
 /// PC for next instruction that will be compiled
 pc: u12,
 
+/// Register holding a pointer to the `Context` struct
 const ctx_reg = riscv.Register.a0;
+/// Register holding the value of I as a host pointer
 const i_reg = riscv.Register.a1;
+/// Register holding the number of instructions left to run
 const instructions_remaining_reg = riscv.Register.s1;
-/// Link register for guest subroutine calls
+/// Link register for guest subroutine calls so that checking if we should keep running
+/// uses `ra` instead
 const guest_ra = riscv.Register.t0;
 const temp_regs = [_]riscv.Register{ .t1, .t2, .a2 };
 
@@ -30,9 +34,26 @@ const host_functions = struct {
     pub const yield = &chip8.Cpu.Context.yield;
     pub const snapshot = &snapshotImpl;
     pub const draw = &drawImpl;
+    pub const storeV0 = storeImpl(0x0);
+    pub const storeV1 = storeImpl(0x1);
+    pub const storeV2 = storeImpl(0x2);
+    pub const storeV3 = storeImpl(0x3);
+    pub const storeV4 = storeImpl(0x4);
+    pub const storeV5 = storeImpl(0x5);
+    pub const storeV6 = storeImpl(0x6);
+    pub const storeV7 = storeImpl(0x7);
+    pub const storeV8 = storeImpl(0x8);
+    pub const storeV9 = storeImpl(0x9);
+    pub const storeVA = storeImpl(0xa);
+    pub const storeVB = storeImpl(0xb);
+    pub const storeVC = storeImpl(0xc);
+    pub const storeVD = storeImpl(0xd);
+    pub const storeVE = storeImpl(0xe);
+    pub const storeVF = storeImpl(0xf);
 };
 
 fn randomImpl(context: *Context) callconv(.c) extern struct { a0: *Context, a1: u8 } {
+    comptime std.debug.assert(ctx_reg == .a0 and i_reg == .a1);
     const cpu: *chip8.Cpu = @alignCast(@fieldParentPtr("context", context));
     return .{
         .a0 = context,
@@ -121,6 +142,8 @@ fn drawImpl(
     context: *Context,
     i: [*]const u8,
 } {
+    // JIT uses this knowledge to call efficiently
+    comptime std.debug.assert(ctx_reg == .a0 and i_reg == .a1);
     // TODO bounds check (or in jit?)
     var intersect: u8 = 0;
     for (0..@min(rows, 32 - y)) |row| {
@@ -136,6 +159,31 @@ fn drawImpl(
     }
     context.v[0xf] = @intFromBool(intersect != 0);
     return .{ .context = context, .i = i };
+}
+
+const StoreReturn = extern struct {
+    context: *Context,
+    i: [*]u8,
+};
+
+fn storeImpl(comptime up_to: u4) *const fn (
+    context: *Context,
+    i: [*]u8,
+) callconv(.c) StoreReturn {
+    const num_regs = @as(u8, up_to) + 1;
+    comptime std.debug.assert(ctx_reg == .a0 and i_reg == .a1);
+    return &struct {
+        fn impl(context: *Context, i: [*]u8) callconv(.c) StoreReturn {
+            const offset = i - &context.memory[0];
+            const I = @Int(.signed, num_regs);
+            const prev = std.mem.readPackedInt(I, &context.compiled_code_dirty, offset, .little);
+            if (prev != -1) {
+                @panic("TODO: overwrite code with jump to trampoline");
+                // std.mem.writePackedInt(I, &context.compiled_code_dirty, offset, -1, .little);
+            }
+            return .{ .context = context, .i = i + num_regs };
+        }
+    }.impl;
 }
 
 const HostFunctionTrampolines = struct {
@@ -213,6 +261,7 @@ fn makeRiscvTrampolines(
     const first_code_offset = writer.buffered().len;
     var each_code_size: ?usize = null;
 
+    @setEvalBranchQuota(5000);
     for (@typeInfo(HostFunction).@"enum".fields) |field| {
         const pointer_offset = pointer_offsets.get(@enumFromInt(field.value));
         const pc_offset_before = writer.buffered().len;
@@ -477,19 +526,10 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             try a.andi(hostRegFromV(dst_reg), .a1, mask);
             try scope.restoreI();
         },
-        .store => |up_to| {
-            // TODO wrap I around
+        .load, .store => |up_to, tag| {
             const reg_count = @as(u8, up_to) + 1;
-            for (0..reg_count) |vx_usize| {
-                const vx: u4 = @intCast(vx_usize);
-                try a.sb(hostRegFromV(vx), vx, i_reg);
-            }
-            try a.addi(i_reg, i_reg, reg_count);
-        },
-        .load => |up_to| {
-            const reg_count = @as(u8, up_to) + 1;
-            // calculate the max pointer I can be to load all these registers
-            // without wrapping around
+            // calculate the max pointer I can be to access all these registers
+            // without overflowing memory
             const max_i = scope.tempReg();
             try a.li(max_i, @as(i32, @offsetOf(Context, "memory")) + 0xfff - reg_count);
             try a.add(max_i, ctx_reg, max_i);
@@ -497,12 +537,26 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             // will be overwritten to branch to trap
             try a.bgtu(i_reg, max_i, 0);
 
-            // load everything in order
+            // access everything in order
             for (0..reg_count) |vx_usize| {
                 const vx: u4 = @intCast(vx_usize);
-                try a.lbu(hostRegFromV(vx), vx, i_reg);
+                if (tag == .load) {
+                    try a.lbu(hostRegFromV(vx), vx, i_reg);
+                } else {
+                    try a.sb(hostRegFromV(vx), vx, i_reg);
+                }
             }
-            try a.addi(i_reg, i_reg, reg_count);
+
+            if (tag == .load) {
+                try a.addi(i_reg, i_reg, reg_count);
+            } else {
+                try scope.saveVRegsForHostCall();
+                try scope.saveRaForHostCall();
+                try self.callHost(@enumFromInt(@intFromEnum(HostFunction.storeV0) + up_to));
+                try scope.restoreVRegsFromHostCall();
+                try scope.restoreRa();
+                // I was incremented by the store implementation
+            }
             const mark_jump_over_trap = self.markNextInstruction();
             // will be overwritten to jump over trap
             try a.j(0);
@@ -514,49 +568,48 @@ pub fn compile(self: *Compiler, instruction: chip8.Instruction) !void {
             // TODO what if this is the last instruction?
             mark_jump_over_trap.insertForwardJumpToNextInstruction(self);
         },
-        .jump, .call => |target| {
-            if (instruction.decode() == .jump) {
-                if (target > self.pc) {
-                    // emit custom instruction encoding containing the jump target
-                    // which will later be fixed up into a real jump
-                    try a.writer.writeInt(
-                        u32,
-                        @bitCast(riscv.Instruction{ .custom_forward_chip8_jump = .{
-                            .target = target,
-                            .kind = .jump,
-                        } }),
-                        .little,
-                    );
-                } else {
-                    const dest: isize = @intCast(self.code_offsets[target]);
-                    const offset = dest - @as(isize, @intCast(self.code.writable.list.items.len));
-                    try a.j(@intCast(offset));
-                }
+        .jump => |target| {
+            if (target > self.pc) {
+                // emit custom instruction encoding containing the jump target
+                // which will later be fixed up into a real jump
+                try a.writer.writeInt(
+                    u32,
+                    @bitCast(riscv.Instruction{ .custom_forward_chip8_jump = .{
+                        .target = target,
+                        .kind = .jump,
+                    } }),
+                    .little,
+                );
             } else {
-                // caller-side stack maintenance since we can't know which instructions are call targets
-                try a.addi(.sp, .sp, -16);
-                try a.storeRegister(.ra, 0, .sp);
-                try a.storeRegister(guest_ra, 8, .sp);
-                if (target > self.pc) {
-                    // emit custom instruction encoding containing the jump target
-                    // which will later be fixed up into a real jump
-                    try a.writer.writeInt(
-                        u32,
-                        @bitCast(riscv.Instruction{ .custom_forward_chip8_jump = .{
-                            .target = target,
-                            .kind = .call,
-                        } }),
-                        .little,
-                    );
-                } else {
-                    const dest: isize = @intCast(self.code_offsets[target]);
-                    const offset = dest - @as(isize, @intCast(self.code.writable.list.items.len));
-                    try a.jal(guest_ra, @intCast(offset));
-                }
-                try a.loadRegister(.ra, 0, .sp);
-                try a.loadRegister(guest_ra, 8, .sp);
-                try a.addi(.sp, .sp, 16);
+                const dest: isize = @intCast(self.code_offsets[target]);
+                const offset = dest - @as(isize, @intCast(self.code.writable.list.items.len));
+                try a.j(@intCast(offset));
             }
+        },
+        .call => |target| {
+            // caller-side stack maintenance since we can't know which instructions are call targets
+            try a.addi(.sp, .sp, -16);
+            try a.storeRegister(.ra, 0, .sp);
+            try a.storeRegister(guest_ra, 8, .sp);
+            if (target > self.pc) {
+                // emit custom instruction encoding containing the jump target
+                // which will later be fixed up into a real jump
+                try a.writer.writeInt(
+                    u32,
+                    @bitCast(riscv.Instruction{ .custom_forward_chip8_jump = .{
+                        .target = target,
+                        .kind = .call,
+                    } }),
+                    .little,
+                );
+            } else {
+                const dest: isize = @intCast(self.code_offsets[target]);
+                const offset = dest - @as(isize, @intCast(self.code.writable.list.items.len));
+                try a.jal(guest_ra, @intCast(offset));
+            }
+            try a.loadRegister(.ra, 0, .sp);
+            try a.loadRegister(guest_ra, 8, .sp);
+            try a.addi(.sp, .sp, 16);
         },
         .ret => {
             try a.jr(guest_ra, 0);
@@ -912,4 +965,35 @@ test "loop" {
     // skipped
     try t.expectEqual(0x20a, snapshots[20].pc);
     try t.expectEqual(15, snapshots[20].v[1]);
+}
+
+test "writes" {
+    const t = std.testing;
+    const allocator = t.allocator;
+    const stack = try allocator.alignedAlloc(
+        u8,
+        .fromByteUnits(std.heap.page_size_min),
+        4 << 10,
+    );
+    defer allocator.free(stack);
+    var compiler: Compiler = undefined;
+    compiler.init(allocator, @import("builtin").cpu.features);
+    defer compiler.deinit() catch unreachable;
+    try compiler.prologue();
+
+    try compiler.compile(@enumFromInt(0x6001));
+    try compiler.compile(@enumFromInt(0x6102));
+    try compiler.compile(@enumFromInt(0x6203));
+    try compiler.compile(@enumFromInt(0xaffc));
+    try compiler.compile(@enumFromInt(0xf255));
+    try compiler.compile(@enumFromInt(0x120a));
+
+    try compiler.epilogue();
+    try compiler.makeExecutable();
+    var snapshots: [5]chip8.Cpu.Snapshot = undefined;
+    var cpu = chip8.Cpu.init(stack, compiler.entrypoint(), 0, &snapshots);
+    try cpu.run(5);
+    try t.expectEqual(1, cpu.context.memory[0xffc]);
+    try t.expectEqual(2, cpu.context.memory[0xffd]);
+    try t.expectEqual(3, cpu.context.memory[0xffe]);
 }

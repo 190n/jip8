@@ -39,10 +39,15 @@ pub const Context = extern struct {
     screen: [64 * 32 / 8]u8 align(@alignOf(usize)),
     did_exit: bool = false,
     memory: [4096]u8,
-    canary: switch (builtin.mode) {
+    /// One bit for each byte of `memory` indicating whether the compiled code for that address
+    /// has been overwritten with a jump to `recompile` (which happens when we write to memory
+    /// and the corresponding bit here is *not* set). The bit is cleared if we ever try jumping
+    /// to that address and actually recompile the corresponding code.
+    compiled_code_dirty: [512]u8,
+    canary: (switch (builtin.mode) {
         .Debug, .ReleaseSafe => enum(u64) { valid = 0x665f0c30b0317cf4, _ },
         .ReleaseFast, .ReleaseSmall => enum(u0) { valid },
-    } = .valid,
+    }) align(1) = .valid,
 
     pub fn yield(self: *Context) callconv(.c) *Context {
         self.did_exit = false;
@@ -103,6 +108,7 @@ pub fn init(
             .guest_ra = undefined,
             .v = undefined,
             .memory = undefined,
+            .compiled_code_dirty = undefined,
             .screen = undefined,
             .snapshots = if (enable_snapshot) .{
                 .base = snapshots.ptr,
@@ -116,6 +122,8 @@ pub fn init(
     @memset(&cpu.context.v, 0);
     @memset(&cpu.context.memory, 0);
     @memset(&cpu.context.screen, 0);
+    // TODO change to 0
+    @memset(&cpu.context.compiled_code_dirty, 0xff);
     cpu.frameLocation().* = StackFrame.init(code);
     return cpu;
 }
